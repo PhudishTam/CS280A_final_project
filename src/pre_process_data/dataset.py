@@ -11,11 +11,12 @@ class Datasetcoloritzation(Dataset):
     '''
     A class used to represent a dataset for colorization.
     '''
-    def __init__(self, data_dir, annotation_file=None, image_size=512, tokenizer=None, training=True):
+    def __init__(self, data_dir,annotation_file,device, image_size=512, tokenizer=None, training=True):
         self.data_dir = data_dir
         self.image_size = image_size
         self.tokenizer = tokenizer
         self.training = training
+        self.device = device
         
         if self.training and annotation_file is not None:
             self.coco = COCO(annotation_file)
@@ -67,9 +68,9 @@ class Datasetcoloritzation(Dataset):
             tokenized_caption = None
         
         return {
-            'gray_image': gray_image,
-            'color_image': image_resized,
-            'caption': tokenized_caption,
+            'gray_image': gray_image.to(self.device),
+            'color_image': image_resized.to(self.device),
+            'caption': tokenized_caption.to(self.device) if tokenized_caption else None,
             "caption_text": captions
         }
     
