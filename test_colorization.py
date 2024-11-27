@@ -46,7 +46,7 @@ if __name__ == "__main__":
     stage_3.to(device)
 
     # Encode the prompt
-    prompt = "a colorful photo of a red apple"
+    prompt = "colorize the image"
     prompt_embeds, negative_embeds = stage_1.encode_prompt(prompt)
 
     # Generate the image using stage I
