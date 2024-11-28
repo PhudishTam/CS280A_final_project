@@ -34,8 +34,6 @@ def generate_captions(image_dir, output_json, model_name, device, batch_size=512
         for image_file, caption in zip(batch_files, captions):
             captions_dict[image_file] = caption
     
-    # Debugging: Print the captions_dict to verify its contents
-    print("Captions Dictionary:", captions_dict)
     
     with open(output_json, 'w') as f:
         json.dump(captions_dict, f, indent=4)
@@ -44,9 +42,9 @@ def generate_captions(image_dir, output_json, model_name, device, batch_size=512
     print(f"Captions saved to {output_json}")
 
 if __name__ == "__main__":
-    image_dir = "../initData/MS_COCO/test_set/test2017"
-    os.makedirs("../initData/MS_COCO/test_set/annotations", exist_ok=True)
-    output_json = "../initData/MS_COCO/test_set/annotations/captions_test2017.json"
+    image_dir = "initData/MS_COCO/extra_train_2017/unlabeled2017"
+    os.makedirs("initData/MS_COCO/extra_train_2017/annotations", exist_ok=True)
+    output_json = "initData/MS_COCO/extra_train_2017/annotations/captions_extra_train_2017.json"
     model_name = "Salesforce/blip-image-captioning-large"
     device = "cuda"
     generate_captions(image_dir, output_json, model_name, device)
