@@ -2,3 +2,4 @@ initData/
 cache/
 sh_file/
 *.log
+vae_results/

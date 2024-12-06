@@ -9,14 +9,13 @@ import torch
 from torch import nn
 from tqdm import tqdm
 import numpy as np
-
-
+import matplotlib.pyplot as plt
+from torch.utils.data import Subset
 class VAE(nn.Module):
-    def __init__(self, model_name,device):
+    def __init__(self, model_name):
         super(VAE, self).__init__()
         self.model_name = model_name
-        self.device = device
-        self.vae = AutoencoderKL.from_pretrained(model_name).to(device)
+        self.vae = AutoencoderKL.from_pretrained(model_name)
 
     def encode(self, images):
         with torch.no_grad():
@@ -30,74 +29,73 @@ class VAE(nn.Module):
         return images
     
     def forward(self, images):
+        #print(f"Shape inside forward: {images.shape}")
         latent = self.encode(images)
         reconstructed_images = self.decode(latent)
+        #print(f"Shape inside after decode: {reconstructed_images.shape}")
         return reconstructed_images
 
-def finetune_vae(vae, train_loader,test_loader, num_epochs, lr, device):
-    optimizer = torch.optim.Adam(vae.parameters(), lr=lr)
-    criterion = nn.MSELoss()
-    train_losses = []
-    test_losses = []
-    vae.to(device)
+def test_vae(vae, train_loader, test_loader, device):
     vae.eval()
-    initial_test_loss = 0.0
+    train_losses_color = []
+    train_losses_gray = []
+    test_losses_color = []
+    test_losses_gray = []
     with torch.no_grad():
-        for batch in tqdm(test_loader, desc="Initial testing"):
+        for batch in tqdm(train_loader, desc=f"Calculate train"):
+            # put data to device
+            gray_images = batch['gray_image'].repeat(1,3,1,1).to(device)
             color_images = batch['color_image'].to(device)
-            reconstructed_images = vae(color_images)
-            loss = criterion(reconstructed_images, color_images)
-            initial_test_loss += loss.item()
-    initial_test_loss /= len(test_loader)       
-    test_losses.append(initial_test_loss)
+            #print(f"Shape of gray_images: {gray_images.shape}")
+            #print(f"Shape of color_images: {color_images.shape}")
+            reconstructed_images_gray = vae(gray_images).to(device)
+            loss_gray = nn.functional.mse_loss(reconstructed_images_gray, gray_images)
+            train_losses_gray.append(loss_gray.item())
+            reconstructed_images_color = vae(color_images).to(device)
+            loss_color = nn.functional.mse_loss(reconstructed_images_color, color_images)
+            train_losses_color.append(loss_color.item())
+        for batch in tqdm(test_loader, desc=f"Calculate test"):
+            gray_images = batch['gray_image'].repeat(1,3,1,1).to(device)
+            color_images = batch['color_image'].to(device)
+            reconstructed_images_gray = vae(gray_images).to(device)
+            loss_gray = nn.functional.mse_loss(reconstructed_images_gray, gray_images)
+            test_losses_gray.append(loss_gray.item())
+            reconstructed_images_color = vae(color_images).to(device)
+            loss_color = nn.functional.mse_loss(reconstructed_images_color, color_images)
+            test_losses_color.append(loss_color.item())
+    return np.array(train_losses_gray), np.array(train_losses_color), np.array(test_losses_gray), np.array(test_losses_color)
+if __name__ == "__main__": 
+    train_data_dir = "initData/MS_COCO/training_set/train2017"
+    train_annotation_file1 = "initData/MS_COCO/training_set/annotations/captions_train2017.json"
+    train_annotation_file2 = "initData/MS_COCO/training_set/annotations/captions_extra_train_2017.json"
+    device = "cpu"
+    tokenizer = T5Tokenizer.from_pretrained('t5-small')
+    train_dataset = Datasetcoloritzation(train_data_dir, annotation_file1=train_annotation_file1,annotation_file2=train_annotation_file2, device=device,tokenizer=tokenizer,training=True,image_size=256)
+    #max_train_samples = 4
+    #train_dataset = Subset(train_dataset,range(max_train_samples))
+    train_dataloader = DataLoader(train_dataset,batch_size=256, shuffle=True)
+    print(f"Number of training samples: {len(train_dataset)}")
+    test_data_dir = "initData/MS_COCO/test_set/test2017"
+    test_annotation_file = "initData/MS_COCO/test_set/annotations/captions_test2017.json"
+    test_dataset = Datasetcoloritzation(test_data_dir, annotation_file1=test_annotation_file, device=device,tokenizer=tokenizer,training=False,image_size=256)
+    #max_test_samples = 4
+    #test_dataset = Subset(test_dataset,range(max_test_samples))
+    test_dataloader = DataLoader(test_dataset,batch_size=256, shuffle=True)
+    print(f"Number of testing samples: {len(test_dataset)}")
+    vae = VAE("stabilityai/sd-vae-ft-mse")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Device: {device}")
+    vae = vae.to(device)
+    # if torch.cuda.device_count() > 1:
+    #     print(f"Number of GPUs: {torch.cuda.device_count()}")
+    #     vae = nn.DataParallel(vae)
+    train_losses_gray, train_losses_color, test_losses_gray, test_losses_color = test_vae(vae, train_dataloader, test_dataloader,device)
+    np.save("train_losses_gray.npy",train_losses_gray)
+    np.save("train_losses_color.npy",train_losses_color)
+    np.save("test_losses_gray.npy",test_losses_gray)
+    np.save("test_losses_color.npy",test_losses_color)
+    print(f"Mean train loss gray : {np.mean(train_losses_gray)}")
+    print(f"Mean train loss color : {np.mean(train_losses_color)}")
+    print(f"Mean test loss gray : {np.mean(test_losses_gray)}")
+    print(f"Mean test loss color : {np.mean(test_losses_color)}")
     
-    for epoch in range(num_epochs):
-        vae.train()
-        for i,data in enumerate(tqdm(train_loader, desc=f"Training Epoch {epoch+1}/{num_epochs}")):
-            data = data.to(device)
-            optimizer.zero_grad()
-            reconstructed_images = vae(data)
-            loss = criterion(reconstructed_images, data)
-            loss.backward()
-            optimizer.step()
-            train_losses.append(loss.item())
-        
-        vae.eval()
-        test_loss = 0.0
-        with torch.no_grad():
-            for batch in tqdm(test_loader, desc=f"Testing Epoch {epoch+1}/{num_epochs}"):
-                color_images = batch['color_image'].to(device)
-                reconstructed_images = vae(color_images)
-                loss = criterion(reconstructed_images, color_images)
-                test_loss += loss.item()
-        test_loss /= len(test_loader)
-        test_losses.append(test_loss)
-    return vae, np.array(train_losses), np.array(test_losses)
-            
-
-
-if __name__ == "__main__":
-    # data_dir = "../../initData/MS_COCO/val_set/val2017"
-    # annotation_file = "../../initData/MS_COCO/training_set/annotations/captions_val2017.json"
-    # tokenizer = T5Tokenizer.from_pretrained('t5-small')
-    # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    # dataset = Datasetcoloritzation(data_dir, annotation_file, device=device,tokenizer=tokenizer,training=True,image_size=512)
-    # dataloader = DataLoader(dataset,batch_size=4, shuffle=True)
-    # vae_model = VAE("stabilityai/sd-vae-ft-mse",device)
-    # for batch in dataloader:
-    #     gray_images = batch['gray_image'].repeat(1,3,1,1)
-    #     color_images = batch['color_image']
-    #     captions = batch['caption']
-    #     caption_texts = batch['caption_text']
-    #     # save gray_images 
-    #     latents = vae_model.encode(color_images)
-    #     print(latents.shape)
-    #     reconstructed_images = vae_model.decode(latents)
-    #     torchvision.utils.save_image(reconstructed_images, "reconstructed_images.png")
-    #     torchvision.utils.save_image(gray_images, "gray_images.png")
-    #     torchvision.utils.save_image(color_images, "color_images.png")
-    #     print(caption_texts)
-    #     break
-    # model = "CompVis/stable-diffusion-v1-4"
-    # vae = AutoencoderKL.from_pretrained("stabilityai/sd-vae-ft-mse")
-    # pipe = StableDiffusionPipeline.from_pretrained(model, vae=vae)

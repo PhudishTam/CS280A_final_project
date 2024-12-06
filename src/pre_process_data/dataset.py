@@ -8,86 +8,75 @@ from transformers import T5Tokenizer
 import json
 
 class Datasetcoloritzation(Dataset):
-    def __init__(self, data_dirs, annotation_files, tokenizer=None, training=True, device=None):
-        self.data_dirs = data_dirs if isinstance(data_dirs, list) else [data_dirs]
-        self.annotation_files = annotation_files if isinstance(annotation_files, list) else [annotation_files]
+    '''
+    A class used to represent a dataset for colorization.
+    '''
+    def __init__(self, data_dir,annotation_file1,annotation_file2=None,device=None, image_size=512, tokenizer=None, training=True):
+        self.data_dir = data_dir
+        self.image_size = image_size
         self.tokenizer = tokenizer
         self.training = training
-        self.device = device or torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        self.transform = transforms.Compose([
-            transforms.Resize((256, 256)),
-            transforms.ToTensor()
-        ])
-        
-        self.image_ids = []
-        self.annotation = {}
-        
-        if self.training:
-            self.cocos = []
-            for annotation_file in self.annotation_files:
-                coco = COCO(annotation_file)
-                self.cocos.append(coco)
-                img_ids = coco.getImgIds()
-                self.image_ids.extend(img_ids)
-            self.image_ids = list(set(self.image_ids))  # Remove duplicates
+        self.device = device
+        self.data_types = {}
+        if self.training and annotation_file1 is not None and annotation_file2 is not None:
+            self.coco = COCO(annotation_file1)
+            coco_img_ids = list(self.coco.imgs.keys())
+            with open(annotation_file2, 'r') as f:
+                self.annotation = json.load(f)
+            custom_img_ids = [img_id.split('.')[0] for img_id in self.annotation.keys()]
+            self.image_ids = list(set(coco_img_ids + custom_img_ids))
+            for img_id in self.image_ids:
+                if img_id in self.coco.imgs:
+                    self.data_types[img_id] = "coco"
+                else:
+                    self.data_types[img_id] = "custom"
         else:
-            for annotation_file in self.annotation_files:
-                with open(annotation_file, 'r') as f:
-                    annotation_data = json.load(f)
-                    for item in annotation_data:
-                        img_filename = item['filename']
-                        captions = item.get('caption', "")
-                        self.image_ids.append(img_filename)
-                        self.annotation[img_filename] = captions
+            self.image_list = os.listdir(self.data_dir)
+            self.image_ids = self.image_list
+            with open(annotation_file1, 'r') as f:
+                self.annotation = json.load(f)
         
+        self.transform = transforms.Compose([
+            transforms.Resize((self.image_size, self.image_size), T.InterpolationMode.BICUBIC),
+            transforms.ToTensor(),
+        ])
+    
     def __getitem__(self, idx):
         if self.training:
             img_id = self.image_ids[idx]
-            img_info = None
-            for coco, data_dir in zip(self.cocos, self.data_dirs):
-                img_infos = coco.loadImgs([img_id])
-                if img_infos:
-                    img_info = img_infos[0]
-                    img_filename = img_info['file_name']
-                    img_path = os.path.join(data_dir, img_filename)
-                    if os.path.exists(img_path):
-                        break
-            if not img_info:
-                raise FileNotFoundError(f"Image ID {img_id} not found in any dataset.")
+            data_type = self.data_types[img_id]
+            if data_type == "coco":    
+                img_info = self.coco.loadImgs(img_id)[0]
+                img_filename = img_info['file_name']
+                ann_ids = self.coco.getAnnIds(imgIds=img_id)
+                anns = self.coco.loadAnns(ann_ids)
+                captions = max([ann['caption'] for ann in anns], key=len).lower()
+                captions = "A colorful image of " + captions
+            else:
+                img_filename = str(img_id) + ".jpg"
+                captions = self.annotation[img_filename].capitalize()
+            img_path = os.path.join(self.data_dir, img_filename)
             image = Image.open(img_path).convert('RGB')
             image_resized = self.transform(image)
             gray_image = transforms.functional.rgb_to_grayscale(image_resized)
-            captions = []
-            for coco in self.cocos:
-                ann_ids = coco.getAnnIds(imgIds=img_id)
-                anns = coco.loadAnns(ann_ids)
-                captions.extend([ann['caption'] for ann in anns])
-            caption = max(captions, key=len).lower() if captions else ""
-            caption = "A colorful image of " + caption
         else:
             img_filename = self.image_ids[idx]
-            img_path = None
-            for data_dir in self.data_dirs:
-                path = os.path.join(data_dir, img_filename)
-                if os.path.exists(path):
-                    img_path = path
-                    break
-            if not img_path:
-                raise FileNotFoundError(f"Image {img_filename} not found in any dataset.")
+            img_path = os.path.join(self.data_dir, img_filename)
             image = Image.open(img_path).convert('RGB')
             image_resized = self.transform(image)
             gray_image = transforms.functional.rgb_to_grayscale(image_resized)
-            caption = self.annotation.get(img_filename, "")
+            captions = self.annotation.get(img_filename, "")
         
         if self.tokenizer:
             tokenized_caption = self.tokenizer(
-                caption,
+                captions,
                 return_tensors='pt',
                 padding='max_length',
                 truncation=True,
                 max_length=128
             )
-            tokenized_caption = {k: v.squeeze(0) for k, v in tokenized_caption.items()}
+            for key in tokenized_caption:
+                tokenized_caption[key] = tokenized_caption[key].squeeze(0)
         else:
             tokenized_caption = None
         
@@ -95,28 +84,24 @@ class Datasetcoloritzation(Dataset):
             'gray_image': gray_image.to(self.device),
             'color_image': image_resized.to(self.device),
             'caption': tokenized_caption.to(self.device) if tokenized_caption else None,
-            'caption_text': caption
+            "caption_text": captions,
+            "img_path": img_path
         }
     
     def __len__(self):
         return len(self.image_ids)
 
-if __name__ == '__main__':
-    #data_dir = '../initData/MS_COCO/val_set/val2017'
-    #annotation_file = '../initData/MS_COCO/training_set/annotations/captions_val2017.json'
-    data_dir = '../../initData/MS_COCO/test_set/test2017'
-    annotation_file = '../../initData/MS_COCO/test_set/annotations/captions_test2017.json'
-    tokenizer = T5Tokenizer.from_pretrained('t5-small')
-    dataset = Datasetcoloritzation(data_dir, annotation_file, tokenizer=tokenizer,training=False)
-    
-    # Create a DataLoader
-    dataloader = DataLoader(dataset, batch_size=4, shuffle=True)
-    
-    # Iterate through the DataLoader
-    for batch in dataloader:
-        gray_images = batch['gray_image']
-        color_images = batch['color_image']
-        captions = batch['caption']
-        caption_texts = batch['caption_text']
-        
-        print(caption_texts)
+# if __name__ == '__main__':
+    # data_dir = "../../initData/MS_COCO/val_set/val2017"
+    # annotation_file = "../../initData/MS_COCO/training_set/annotations/captions_val2017.json"
+    # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # tokenizer = T5Tokenizer.from_pretrained('t5-small')
+    # dataset = Datasetcoloritzation(data_dir, annotation_file, device=device,tokenizer=tokenizer,training=True,image_size=512)
+    # dataloader = DataLoader(dataset,batch_size=4, shuffle=True)
+    # vae_model = VAE("stabilityai/sd-vae-ft-mse",device)
+    # for batch in dataloader:
+    #     gray_images = batch['gray_image'].repeat(1,3,1,1)
+    #     color_images = batch['color_image']
+    #     captions = batch['caption']
+    #     caption_texts = batch['caption_text']
+    #     # save gray_images
