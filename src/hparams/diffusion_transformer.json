@@ -1,0 +1,9 @@
+{
+    "train_data_dir" : "initData/MS_COCO/training_set/train2017",
+    "train_annotation_file1" : "initData/MS_COCO/training_set/annotations/captions_train2017.json",
+    "train_annotation_file2" : "initData/MS_COCO/training_set/annotations/captions_extra_train_2017.json",
+    "test_data_dir":  "initData/MS_COCO/test_set/test2017",
+    "test_annotation_file": "initData/MS_COCO/test_set/annotations/captions_test2017.json",
+    "device" : "cuda",
+    "tokenizer" : "openai/clip-vit-base-patch32"
+}
