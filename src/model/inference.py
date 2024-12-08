@@ -11,8 +11,8 @@ sys.path.append("/accounts/grad/phudish_p/CS280A_final_project/src")
 if __name__ == '__main__':
     # Load the model
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = DiT(input_shape=(4,32,32), patch_size=2, hidden_size=512, num_heads=8, num_layers=12, num_classes=10, cfg_dropout_prob=0.1).to(device)    
-    checkpoint = torch.load('/accounts/grad/phudish_p/CS280A_final_project/model_saved/model_experiment_1.pt')
+    model = DiT(input_shape=(4,32,32), patch_size=2, hidden_size=512, num_heads=8, num_layers=12, cfg_dropout_prob=0.1).to(device)    
+    checkpoint = torch.load('/accounts/grad/phudish_p/CS280A_final_project/model_saved/model_experiment_1_2.pt')
     model.load_state_dict(checkpoint['model_state_dict'])
     model.eval()
     print("Model loaded successfully")
