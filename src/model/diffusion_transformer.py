@@ -106,6 +106,8 @@ class DitBlock(nn.Module):
         self.mlp = MLP(hidden_size=hidden_size)
 
     def forward(self,x,c):
+        # print(f"Shape of x : {x.shape}")
+        # print(f"Shape of c : {c.shape}")
         c = self.layer_1(c)
         #print(f"Shape of c : {c.shape}")
         shift_msa,scale_msa,gate_msa,shift_mlp,scale_mlp,gate_mlp = c.chunk(6,dim=1)
@@ -167,10 +169,16 @@ def timestep_embedding(timesteps, dim, max_period=10000):
 
     return embedding
 
-def dropout_classes(labels, dropout_prob):
-    drop_ids = torch.rand(labels.shape[0], device=labels.device) < dropout_prob
-    labels = torch.where(drop_ids, 10, labels)
-    return labels
+# def dropout_classes(labels, dropout_prob):
+#     drop_ids = torch.rand(labels.shape[0], device=labels.device) < dropout_prob
+#     labels = torch.where(drop_ids, 10, labels)
+#     return labels
+
+def dropout_text_embedding(text_emb, dropout_prob):
+    #print(f"Shape of text_emb : {text_emb.shape}")
+    drop_ids = torch.rand(text_emb.shape[0], device=text_emb.device) < dropout_prob
+    text_emb = torch.where(drop_ids.unsqueeze(-1), torch.zeros_like(text_emb), text_emb)
+    return text_emb 
 
 class upatchify(nn.Module):
     def __init__(self,image_size):
@@ -186,14 +194,13 @@ class upatchify(nn.Module):
         return image
 
 class DiT(nn.Module):
-    def __init__(self,input_shape,patch_size,hidden_size,num_heads,num_layers,num_classes,cfg_dropout_prob):
+    def __init__(self,input_shape,patch_size,hidden_size,num_heads,num_layers,cfg_dropout_prob):
         super(DiT,self).__init__()
         self.input_shape = input_shape
         self.patch_size = patch_size
         self.hidden_size = hidden_size
         self.num_heads = num_heads
         self.num_layers = num_layers
-        self.num_classes = num_classes
         self.cfg_dropout_prob = cfg_dropout_prob
         self.patches = patchify_flatten(patch_size)
         num_patches = (input_shape[1]//patch_size) * (input_shape[2]//patch_size)
@@ -208,19 +215,18 @@ class DiT(nn.Module):
         # nn.init.constant_(self.final_layer.layer_1[-1].bias, 0)
         # nn.init.constant_(self.final_layer.linear_1.weight, 0)
         # nn.init.constant_(self.final_layer.linear_1.bias, 0)
-        self.upatch = upatchify((4,8,8))
+        self.upatch = upatchify((4,32,32))
         #print(self.pos_embed.shape[-1])
         pos_embed = get_2d_sincos_pos_embed(self.pos_embed.shape[-1],int(num_patches**0.5))
         self.pos_embed.data.copy_(pos_embed.float().unsqueeze(0))
         
     def forward(self,x,text_emb,t,training=False):
+        #print(f"Shape of text_emb : {text_emb.shape}")
         x = self.patches(x)
-        #print(f"Shape of x : {x.shape}")
         #print(f"Shape of pos_embed : {self.pos_embed.shape}")
         x += self.pos_embed
         #print(f"Shape of t before : {t.shape}")
         t = timestep_embedding(t,x.shape[-1])
-        #print(f"Shape of t after : {t.shape}")
         t = t.squeeze(1)
         if training:
             text_emb = dropout_text_embedding(text_emb,self.cfg_dropout_prob)     
@@ -237,40 +243,55 @@ class DiT(nn.Module):
         loss = nn.MSELoss()
         output = loss(epsilon,epsilon_hat)
         return output 
-    
-    def DDPM_update(self,x_t,eps_hat,t,tm1):
-        alpha_t = torch.cos((np.pi/2)*t)
-        alpha_t_minus_1 = torch.cos((np.pi/2)*tm1)
-        sigma_t = torch.sin((np.pi/2)*t)
-        sigma_t_minus_1 = torch.sin((np.pi/2)*tm1)
-        eta_t = (sigma_t_minus_1)/(sigma_t)*torch.sqrt(1-(alpha_t**2/alpha_t_minus_1**2))
-        epsilon_t = torch.randn_like(x_t)
-        x_t_minus_1 = alpha_t_minus_1*((x_t-sigma_t*eps_hat)/(alpha_t)) + torch.sqrt(sigma_t_minus_1**2-eta_t**2)*eps_hat + eta_t*epsilon_t
-        #x_t_minus_1 = alpha_t_minus_1*torch.clamp((x_t-sigma_t*eps_hat)/(alpha_t),min=-20,max=20) + torch.sqrt(sigma_t_minus_1**2-eta_t**2)*eps_hat + eta_t*epsilon_t
-        return x_t_minus_1
-
-    def sample(self,num_steps,y,device):
+   
+   
+    def sample(self, vae, grayscale, num_steps, device, postiive_prompts, negative_prompts, guidance_scale, color_scale):
         self.eval()
-        ts = torch.linspace(1-1e-4,1e-4,num_steps+1).to(device)
-        x = torch.randn(10,4,8,8).to(device)
-        #x = torch.clamp(x,-3,3)
-        sample = []
         with torch.no_grad():
+            z_x_prime = vae.encode(grayscale)
+            ts = torch.linspace(1-1e-4,1e-4,num_steps+1).to(device)
+            z_t_x = z_x_prime.clone()
             for i in range(num_steps):
                 t = ts[i].unsqueeze(0).unsqueeze(-1)
-                tm1 = ts[i+1].unsqueeze(0).unsqueeze(-1)
-                # t = t.repeat(10,1)
-                # tm1 = tm1.repeat(10,1)
-                eps_hat = self(x,y,t)
-                x = self.DDPM_update(x,eps_hat,t,tm1)
-                #x = torch.clamp(x,-3,3)
-                #print(f"Shape of x : {x.shape}")
-                #generated_sample = x * 0.18215
-                #generated_sample = x * 1.2820
-        return x
+                pred_c = self(z_t_x,postiive_prompts,t,training=False)
+                pred_c_neg = self(z_t_x,negative_prompts,t,training=False)
+                z_hat_x = z_t_x + pred_c_neg + guidance_scale * (pred_c - pred_c_neg)
+                z_t_x = z_t_x + (1/num_steps) * (z_hat_x - z_t_x)
+            z_x = z_x_prime + color_scale * (z_hat_x - z_x_prime) 
+        return z_x
+    # def DDPM_update(self,x_t,eps_hat,t,tm1):
+    #     alpha_t = torch.cos((np.pi/2)*t)
+    #     alpha_t_minus_1 = torch.cos((np.pi/2)*tm1)
+    #     sigma_t = torch.sin((np.pi/2)*t)
+    #     sigma_t_minus_1 = torch.sin((np.pi/2)*tm1)
+    #     eta_t = (sigma_t_minus_1)/(sigma_t)*torch.sqrt(1-(alpha_t**2/alpha_t_minus_1**2))
+    #     epsilon_t = torch.randn_like(x_t)
+    #     x_t_minus_1 = alpha_t_minus_1*((x_t-sigma_t*eps_hat)/(alpha_t)) + torch.sqrt(sigma_t_minus_1**2-eta_t**2)*eps_hat + eta_t*epsilon_t
+    #     #x_t_minus_1 = alpha_t_minus_1*torch.clamp((x_t-sigma_t*eps_hat)/(alpha_t),min=-20,max=20) + torch.sqrt(sigma_t_minus_1**2-eta_t**2)*eps_hat + eta_t*epsilon_t
+    #     return x_t_minus_1
+
+    # def sample(self,num_steps,y,device):
+    #     self.eval()
+    #     ts = torch.linspace(1-1e-4,1e-4,num_steps+1).to(device)
+    #     x = torch.randn(10,4,8,8).to(device)
+    #     #x = torch.clamp(x,-3,3)
+    #     sample = []
+    #     with torch.no_grad():
+    #         for i in range(num_steps):
+    #             t = ts[i].unsqueeze(0).unsqueeze(-1)
+    #             tm1 = ts[i+1].unsqueeze(0).unsqueeze(-1)
+    #             # t = t.repeat(10,1)
+    #             # tm1 = tm1.repeat(10,1)
+    #             eps_hat = self(x,y,t)
+    #             x = self.DDPM_update(x,eps_hat,t,tm1)
+    #             #x = torch.clamp(x,-3,3)
+    #             #print(f"Shape of x : {x.shape}")
+    #             #generated_sample = x * 0.18215
+    #             #generated_sample = x * 1.2820
+    #     return x
 
 
-if __name__ == "__main__":
+#if __name__ == "__main__":
     # json_file_path = os.path.join("/accounts/grad/phudish_p/CS280A_final_project/src", "hparams", "diffusion_transformer.json")
     # print(f"json_file_path: {json_file_path}")
     # with open(json_file_path, "r") as f:

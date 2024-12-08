@@ -4,14 +4,13 @@ import torchvision.transforms as T
 from PIL import Image
 from torchvision import transforms
 from torch.utils.data import Dataset, DataLoader
-from transformers import T5Tokenizer
 import json
 
 class Datasetcoloritzation(Dataset):
     '''
     A class used to represent a dataset for colorization.
     '''
-    def __init__(self, data_dir,annotation_file1,annotation_file2=None,device=None, image_size=512, tokenizer=None, training=True):
+    def __init__(self, data_dir,annotation_file1,annotation_file2=None,device=None, image_size=512, tokenizer=None, training=True, max_length=128):
         self.data_dir = data_dir
         self.image_size = image_size
         self.tokenizer = tokenizer
@@ -40,6 +39,7 @@ class Datasetcoloritzation(Dataset):
             transforms.Resize((self.image_size, self.image_size), T.InterpolationMode.BICUBIC),
             transforms.ToTensor(),
         ])
+        self.max_length = max_length
     
     def __getitem__(self, idx):
         if self.training:
@@ -73,7 +73,7 @@ class Datasetcoloritzation(Dataset):
                 return_tensors='pt',
                 padding='max_length',
                 truncation=True,
-                max_length=128
+                max_length=self.max_length
             )
             for key in tokenized_caption:
                 tokenized_caption[key] = tokenized_caption[key].squeeze(0)

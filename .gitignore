@@ -3,3 +3,4 @@ cache/
 sh_file/
 *.log
 vae_results/
+model_saved/
