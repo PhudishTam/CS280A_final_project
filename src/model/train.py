@@ -152,7 +152,7 @@ def train_test_epochs(model, vae_model, text_encoder_name, train_loader, test_lo
             t_add = t.clone().unsqueeze(-1).unsqueeze(-1)
             z_t = (1-t_add) * z_x_prime + t_add * z_x
             delta_hat = model(z_t, text_embedding, t, training=True)
-            loss = model.module.loss_fn(delta_hat, delta)
+            loss = model.module.loss_fn(z_x, z_t + delta_hat)
             loss.backward()
             optimizer.step()
             if epoch == 0 and i < 100:

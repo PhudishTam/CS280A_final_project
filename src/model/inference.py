@@ -12,7 +12,7 @@ if __name__ == '__main__':
     # Load the model
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = DiT(input_shape=(4,32,32), patch_size=2, hidden_size=512, num_heads=8, num_layers=12, cfg_dropout_prob=0.1).to(device)    
-    checkpoint = torch.load('/accounts/grad/phudish_p/CS280A_final_project/model_saved/model_experiment_1_2.pt')
+    checkpoint = torch.load('/accounts/grad/phudish_p/CS280A_final_project/model_saved/model_experiment_1_1.pt')
     model.load_state_dict(checkpoint['model_state_dict'])
     model.eval()
     print("Model loaded successfully")
@@ -21,7 +21,7 @@ if __name__ == '__main__':
     train_annotation_file1 = "/accounts/grad/phudish_p/CS280A_final_project/initData/MS_COCO/training_set/annotations/captions_val2017.json"
     tokenizer = CLIPTokenizer.from_pretrained("openai/clip-vit-base-patch32")
     validation_dataset = Datasetcoloritzation(validation_data_dir, annotation_file1=train_annotation_file1, device=device,tokenizer=tokenizer,training=False,image_size=256, max_length=77)
-    max_validation_samples = 4
+    max_validation_samples = 8
     validation_dataset = Subset(validation_dataset,range(max_validation_samples))
     validation_dataloader = DataLoader(validation_dataset,batch_size=4, shuffle=True)
     text_encoder = CLIPTextModel.from_pretrained("openai/clip-vit-base-patch32").to(device)
