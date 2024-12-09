@@ -76,7 +76,7 @@ def load_checkpoint(model, optimizer, save_path, rank=0):
 
 def train_test_epochs(model, vae_model, text_encoder_name, train_loader, test_loader, epochs, lr, device, base_save_path, rank, world_size):
     print(f"Rank {rank}: Initializing training...")
-    optimizer = optim.Adam(model.parameters(), lr=lr)
+    optimizer = optim.AdamW(model.parameters(), lr=lr, betas=(0.9, 0.999), weight_decay=0.01)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs*len(train_loader), eta_min=0)
     text_encoder = CLIPTextModel.from_pretrained(text_encoder_name).to(device)
 
@@ -95,6 +95,10 @@ def train_test_epochs(model, vae_model, text_encoder_name, train_loader, test_lo
             for batch in tqdm(test_loader, desc=f"Initial Testing", disable=(rank!=0)):
                 gray_images = batch["gray_image"].repeat(1,3,1,1).to(device)
                 color_images = batch["color_image"].to(device)
+                # print(f"min of gray_images: {gray_images.min()}")
+                # print(f"max of gray_images: {gray_images.max()}")
+                # print(f"min of color_images: {color_images.min()}")
+                # print(f"max of color_images: {color_images.max()}")
                 gray_images = scale_image(gray_images)
                 color_images = scale_image(color_images)
                 tokenized_caption = {key: value.to(device) for key, value in batch["caption"].items()}
@@ -108,14 +112,29 @@ def train_test_epochs(model, vae_model, text_encoder_name, train_loader, test_lo
                     text_embedding = text_hidden_state[batch_indices,last_token_position,:]
 
                 with torch.no_grad():
-                    z_x_prime = vae_model.encode(gray_images) / 4.225868916511535
-                    z_x = vae_model.encode(color_images) / 4.410986113548279
+                    z_x_prime = vae_model.encode(gray_images)
+                    # print(f"Shape of z_x_prime: {z_x_prime.shape}")
+                    # print(f"max of z_x_prime: {z_x_prime.max()}")
+                    # print(f"min of z_x_prime: {z_x_prime.min()}")
+                    z_x_prime = z_x_prime / 4.225868916511535
+                    # print(f"max z_prime_after: {z_x_prime.max()}")
+                    # print(f"min z_prime_after: {z_x_prime.min()}")
+                    z_x = vae_model.encode(color_images)
+                    # print(f"Shape of z_x: {z_x.shape}")
+                    # print(f"max of z_x: {z_x.max()}")
+                    # print(f"min of z_x: {z_x.min()}")
+                    z_x = z_x / 4.410986113548279
+                    #print(f"max z_x_after: {z_x.max()}")
+                    #print(f"min z_x_after: {z_x.min()}")
+                    #z_x_prime = vae_model.encode(gray_images) / 4.225868916511535
+                    #z_x = vae_model.encode(color_images) / 4.410986113548279
                 delta = z_x - z_x_prime
                 t = torch.rand(z_x_prime.shape[0],1).to(device)
                 t_add = t.clone().unsqueeze(-1).unsqueeze(-1)
                 z_t = (1-t_add) * z_x_prime + t_add * z_x
                 delta_hat = model(z_t, text_embedding, t, training=False)
-                loss = model.module.loss_fn(delta_hat, delta)
+                loss = model.module.loss_fn(delta, delta_hat)
+                #loss = model.module.loss_fn(z_x, z_t + delta_hat)
                 initial_test_loss += loss.item()
                 
         loss_tensor = torch.tensor([initial_test_loss], device=device)
@@ -133,6 +152,8 @@ def train_test_epochs(model, vae_model, text_encoder_name, train_loader, test_lo
         for i,batch in enumerate(tqdm(train_loader, desc=f"Training Epoch {epoch+1}/{epochs}", disable=(rank!=0))):
             gray_images = batch["gray_image"].repeat(1,3,1,1).to(device)
             color_images = batch["color_image"].to(device)
+            gray_images = scale_image(gray_images)
+            color_images = scale_image(color_images)
             tokenized_caption = {key: value.to(device) for key, value in batch["caption"].items()}
             with torch.no_grad():
                 text_outputs = text_encoder(**tokenized_caption)
@@ -152,7 +173,8 @@ def train_test_epochs(model, vae_model, text_encoder_name, train_loader, test_lo
             t_add = t.clone().unsqueeze(-1).unsqueeze(-1)
             z_t = (1-t_add) * z_x_prime + t_add * z_x
             delta_hat = model(z_t, text_embedding, t, training=True)
-            loss = model.module.loss_fn(z_x, z_t + delta_hat)
+            loss = model.module.loss_fn(delta, delta_hat)
+            #loss = model.module.loss_fn(z_x, z_t + delta_hat)
             loss.backward()
             optimizer.step()
             if epoch == 0 and i < 100:
@@ -175,6 +197,8 @@ def train_test_epochs(model, vae_model, text_encoder_name, train_loader, test_lo
             for batch in tqdm(test_loader, desc=f"Testing Epoch {epoch+1}/{epochs}", disable=(rank!=0)):
                 gray_images = batch["gray_image"].repeat(1,3,1,1).to(device)
                 color_images = batch["color_image"].to(device)
+                gray_images = scale_image(gray_images)
+                color_images = scale_image(color_images)
                 tokenized_caption = {key: value.to(device) for key, value in batch["caption"].items()}
                 with torch.no_grad():
                     text_outputs = text_encoder(**tokenized_caption)
@@ -192,7 +216,8 @@ def train_test_epochs(model, vae_model, text_encoder_name, train_loader, test_lo
                 t_add = t.clone().unsqueeze(-1).unsqueeze(-1)
                 z_t = (1-t_add) * z_x_prime + t_add * z_x
                 delta_hat = model(z_t,text_embedding,t, training=False)
-                loss = model.module.loss_fn(delta_hat, delta)
+                loss = model.module.loss_fn(delta, delta_hat)
+                #loss = model.module.loss_fn(z_x, z_t + delta_hat)
                 test_loss += loss.item()
 
         test_loss_tensor = torch.tensor([test_loss], device=device)
@@ -230,7 +255,8 @@ if __name__ == "__main__":
     test_data_dir = hparams["test_data_dir"]
     test_annotation_file = hparams["test_annotation_file"]
     tokenizer_name = hparams["tokenizer"]
-    epochs = hparams["epochs"]
+    #epochs = hparams["epochs"]
+    batch_size = hparams["batch_size"]
     lr = hparams["lr"]
     vae_name = hparams["vae_name"]
     text_encoder_name = hparams["text_encoder_name"]
@@ -238,35 +264,37 @@ if __name__ == "__main__":
 
     print(f"Rank {rank}: Creating datasets...")
     train_dataset = Datasetcoloritzation(train_data_dir, annotation_file1=train_annotation_file1, annotation_file2=train_annotation_file2,
-                                         device=device, tokenizer=tokenizer, training=True, image_size=256, max_length=77)
+                                         device=device, tokenizer=tokenizer, training=True, image_size=64, max_length=77)
     test_dataset = Datasetcoloritzation(test_data_dir, annotation_file1=test_annotation_file,
-                                        device=device, tokenizer=tokenizer, training=False, image_size=256, max_length=77)
+                                        device=device, tokenizer=tokenizer, training=False, image_size=64, max_length=77)
 
     if rank == 0:
         print(f"Number of training samples: {len(train_dataset)}")
         print(f"Number of testing samples: {len(test_dataset)}")
 
     print(f"Rank {rank}: Creating data loaders...")
-    # Subset the dataset for testing or debugging, if desired
-    # max_train_samples = 4
-    # max_test_samples = 4
+    #Subset the dataset for testing or debugging, if desired
+    # max_train_samples = 100
+    # max_test_samples = 50
     # train_dataset = Subset(train_dataset, range(max_train_samples))
     # test_dataset = Subset(test_dataset, range(max_test_samples))
     train_sampler = DistributedSampler(train_dataset)
     test_sampler = DistributedSampler(test_dataset)
-    train_dataloader = DataLoader(train_dataset, batch_size=256, sampler=train_sampler)
-    test_dataloader = DataLoader(test_dataset, batch_size=256, sampler=test_sampler)
-
+    train_dataloader = DataLoader(train_dataset, batch_size=batch_size, sampler=train_sampler)
+    test_dataloader = DataLoader(test_dataset, batch_size=batch_size, sampler=test_sampler)
+    print(f"batch_size: {batch_size}")
+    epochs= int(420000 / (len(train_dataset) // batch_size))
+    print(f"Rank {rank}: Number of epochs: {epochs}") 
     print(f"Rank {rank}: Initializing models...")
     vae = VAE(vae_name).to(device)
-    model = DiT(input_shape=(4,32,32), patch_size=2, hidden_size=512, num_heads=8, num_layers=12, cfg_dropout_prob=0.1).to(device)
+    model = DiT(input_shape=(4,8,8), patch_size=2, hidden_size=512, num_heads=16, num_layers=28, cfg_dropout_prob=0.1).to(device)
     if rank == 0:
         print(f"Number of parameters in VAE: {count_parameters(vae)}")
         print(f"Number of parameters in DiT: {count_parameters(model)}")
     model = DDP(model, device_ids=[rank], output_device=rank)
     print(f"Rank {rank}: DDP model created.")
 
-    base_save_path = "/accounts/grad/phudish_p/CS280A_final_project/model_saved/model_experiment_1.pt"
+    base_save_path = "/accounts/grad/phudish_p/CS280A_final_project/model_saved/model_test.pt"
     print(f"Rank {rank}: Starting training...")
     train_losses, test_losses = train_test_epochs(model, vae, text_encoder_name, train_dataloader, test_dataloader, epochs, lr, device, base_save_path, rank, world_size)
 

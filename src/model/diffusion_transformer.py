@@ -215,7 +215,8 @@ class DiT(nn.Module):
         # nn.init.constant_(self.final_layer.layer_1[-1].bias, 0)
         # nn.init.constant_(self.final_layer.linear_1.weight, 0)
         # nn.init.constant_(self.final_layer.linear_1.bias, 0)
-        self.upatch = upatchify((4,32,32))
+        #self.upatch = upatchify((4,32,32))
+        self.upatch = upatchify((4,8,8))
         #print(self.pos_embed.shape[-1])
         pos_embed = get_2d_sincos_pos_embed(self.pos_embed.shape[-1],int(num_patches**0.5))
         self.pos_embed.data.copy_(pos_embed.float().unsqueeze(0))
@@ -249,7 +250,11 @@ class DiT(nn.Module):
         self.eval()
         with torch.no_grad():
             z_x_prime = vae.encode(grayscale)
-            ts = torch.linspace(1-1e-4,1e-4,num_steps+1).to(device)
+            z_x_prime = z_x_prime / 4.225868916511535
+            #ts = torch.linspace(1-1e-4,1e-4,num_steps+1).to(device)
+            #print(f"Shape of ts : {ts.shape}")
+            ts = torch.randint(0, 100, (num_steps,1), device=device).float()/100
+            ts = ts.squeeze(1)
             z_t_x = z_x_prime.clone()
             for i in range(num_steps):
                 t = ts[i].unsqueeze(0).unsqueeze(-1)

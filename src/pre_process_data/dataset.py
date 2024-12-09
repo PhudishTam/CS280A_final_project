@@ -5,7 +5,54 @@ from PIL import Image
 from torchvision import transforms
 from torch.utils.data import Dataset, DataLoader
 import json
+from torchvision.transforms.functional import rgb_to_grayscale
+import torch 
+from skimage.color import rgb2lab, lab2rgb
+import numpy as np
+import warnings
 
+
+
+
+class ScaleChroma:
+    def __init__(self, scale_range=(1.0, 1.2), probability=0.1):
+        self.scale_range = scale_range
+        self.probability = probability
+
+    def __call__(self, img):
+        if torch.rand(1).item() < self.probability:
+            # Convert image to LAB color space
+            lab_img = rgb_to_lab(img)
+            # Ensure LAB values are within valid ranges
+            lab_img[0, :, :] = torch.clamp(lab_img[0, :, :], 0, 100)
+            lab_img[1:, :, :] = torch.clamp(lab_img[1:, :, :], -128, 127)
+            # Scale chroma channels
+            scale_factor = torch.empty(1).uniform_(*self.scale_range).item()
+            lab_img[1:, :, :] *= scale_factor
+            # Convert back to RGB
+            img = lab_to_rgb(lab_img)
+            # Clip RGB values to valid range
+            img = torch.clamp(img, 0, 1)
+        return img
+
+
+# Function to convert RGB to LAB (requires additional library, e.g., skimage)
+
+def rgb_to_lab(img):
+    img = img.permute(1, 2, 0).numpy()  # Convert to HWC format for skimage
+    lab_img = rgb2lab(img)
+    return torch.tensor(lab_img).permute(2, 0, 1)  # Back to CHW
+
+def lab_to_rgb(img):
+    # Clamp LAB values to valid ranges
+    img[0, :, :] = torch.clamp(img[0, :, :], 0, 100)
+    img[1:, :, :] = torch.clamp(img[1:, :, :], -128, 127)
+    # Convert to HWC format for skimage
+    img = img.permute(1, 2, 0).numpy()
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        rgb_img = lab2rgb(img)
+    return torch.tensor(rgb_img).permute(2, 0, 1)
 class Datasetcoloritzation(Dataset):
     '''
     A class used to represent a dataset for colorization.
@@ -37,8 +84,18 @@ class Datasetcoloritzation(Dataset):
         
         self.transform = transforms.Compose([
             transforms.Resize((self.image_size, self.image_size), T.InterpolationMode.BICUBIC),
+            transforms.RandomApply([transforms.ColorJitter(contrast=(0.8, 1.2), brightness=(0.9, 1.1))], p=0.1),
+            transforms.RandomApply([transforms.GaussianBlur(kernel_size=(5, 5), sigma=(0.1, 2.0))], p=0.1),
             transforms.ToTensor(),
         ])
+        # self.transform = T.Compose([
+        #     T.Resize((self.image_size, self.image_size), T.InterpolationMode.BICUBIC),
+        #     #T.RandomApply([T.ColorJitter(contrast=(0.8, 1.2), brightness=(0.9, 1.1))], p=0.1
+        #     #T.RandomApply([T.GaussianBlur(kernel_size=(5, 5), sigma=(0.1, 2.0))], p=0.1),
+        #     T.ToTensor(),
+        #     T.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
+        #     #T.RandomApply([ScaleChroma(scale_range=(1.0, 1.2))], p=0.1),
+        # ])
         self.max_length = max_length
     
     def __getitem__(self, idx):

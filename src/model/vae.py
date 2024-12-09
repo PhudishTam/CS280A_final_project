@@ -107,25 +107,42 @@ if __name__ == "__main__":
     train_annotation_file1 = "/accounts/grad/phudish_p/CS280A_final_project/initData/MS_COCO/training_set/annotations/captions_val2017.json"
     device = "cuda" if torch.cuda.is_available() else "cpu"
     tokenizer = T5Tokenizer.from_pretrained('t5-small')
-    validation_dataset = Datasetcoloritzation(validation_data_dir, annotation_file1=train_annotation_file1, device=device,tokenizer=tokenizer,training=False,image_size=256)
+    validation_dataset = Datasetcoloritzation(validation_data_dir, annotation_file1=train_annotation_file1, device=device,tokenizer=tokenizer,training=False,image_size=64)
     validation_dataloader = DataLoader(validation_dataset,batch_size=256, shuffle=True)
     print(f"Number of validation samples: {len(validation_dataset)}")
     vae = VAE("stabilityai/sd-vae-ft-mse")
     vae.to(device)
     scale_factor_gray = []
     scale_factor_color = []
+    reconstruction_error_color = []
     with torch.no_grad():
         for batch in tqdm(validation_dataloader, desc=f"Calculate scale factor"):
             gray_images = batch['gray_image'].repeat(1,3,1,1).to(device)
             color_images = batch['color_image'].to(device)
+            torchvision.utils.save_image(gray_images, "gray_images_test_vae.png")
+            torchvision.utils.save_image(color_images, "color_images_test_vae.png")
             gray_images = scale_image(gray_images)
             color_images = scale_image(color_images)
             encoded_gray_images = vae.encode(gray_images)
             encoded_color_images = vae.encode(color_images)
+            decoded_color_images = vae.decode(encoded_color_images)
+            decoded_gray_images = vae.decode(encoded_gray_images)
+            decoded_gray_images = (decoded_gray_images + 1.0) / 2.0
+            decoded_color_images = (decoded_color_images + 1.0) / 2.0
+            print(f"Shape of decoded_gray_images: {decoded_gray_images.shape}")
+            print(f"Shape of decoded_color_images: {decoded_color_images.shape}")
+            print(f"min decoded color: {decoded_color_images.min()}")
+            print(f"max decoded color: {decoded_color_images.max()}")
+            torchvision.utils.save_image(decoded_gray_images, "decoded_gray_images_test_vae.png")
+            torchvision.utils.save_image(decoded_color_images, "decoded_color_images_test_vae.png")
+            #print(f"Reconstruction error gray: {nn.functional.mse_loss(decoded_gray_images, gray_images)}")
+            #print(f"Reconstruction error color: {nn.functional.mse_loss(decoded_color_images, color_images)}")
+            reconstruction_error_color.append(nn.functional.mse_loss(decoded_color_images, color_images).item())
             flatten_encoded_gray_images = nn.Flatten()(encoded_gray_images)
             flatten_encoded_color_images = nn.Flatten()(encoded_color_images)
             scale_factor_gray.append(flatten_encoded_gray_images.std().item())
             scale_factor_color.append(flatten_encoded_color_images.std().item()) 
+    print(f"Mean reconstruction error color : {np.mean(reconstruction_error_color)}")
     print(f"Mean scale factor gray : {np.mean(scale_factor_gray)}")
     print(f"Mean scale factor color : {np.mean(scale_factor_color)}")
     
