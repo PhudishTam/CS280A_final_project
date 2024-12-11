@@ -36,7 +36,7 @@ if __name__ == "__main__":
                                             training=False,
                                             image_size=256)
     
-    validation_dataset = Subset(validation_dataset, range(16), shuffle=Tru
+    validation_dataset = Subset(validation_dataset, range(16), shuffle=True)
     validation_dataloader = DataLoader(validation_dataset, batch_size=8, shuffle=True)
     image_generated = 0
     real_image_count = 0
@@ -68,6 +68,4 @@ if __name__ == "__main__":
                 img = cv2.cvtColor(img, cv2.COLOR_LAB2BGR)
                 cv2.imwrite(f"real_image_{real_image_count}.png", (img * 255).astype(np.uint8))
                 real_image_count += 1
-                
-            
             

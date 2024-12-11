@@ -9,6 +9,7 @@
     "text_encoder_name" : "t5-small",
     "model_name" : "google/vit-base-patch16-224-in21k",
     "epochs" : 100,
-    "lr" : 1e-3,
-    "batch_size" : 128
+    "lr" : 2e-4,
+    "batch_size" : 16,
+    "save_path" : "/accounts/grad/phudish_p/CS280A_final_project/model_saved/GAN_experiment_3.pt"
 }

@@ -353,6 +353,7 @@ if __name__ == "__main__":
     discriminator = discriminator.to(device)
     
     generator.apply(lambda x : normal_init(x))
+    
     print(f"Rank {rank}: Initializing models...")
     if rank == 0:
         print(f"Number of parameters in Generator: {count_parameters(generator)}")

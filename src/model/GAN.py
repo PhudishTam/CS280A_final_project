@@ -245,7 +245,6 @@ class Generator_Unet(nn.Module):
     
     def forward(self, x):
         # Encoder with stored intermediate features
-        x = x.c
         x1 = self.conv_layer(x)
         x2 = self.conv_block1(x1)
         x3 = self.conv_block2(x2)
@@ -376,36 +375,67 @@ class Generator_pretrained(nn.Module):
         
     
     
-class Discriminator(nn.Module):
-    def __init__(self):
-        super(Discriminator, self).__init__()
-        self.down1 = downsample(3, 64, 4, False)
-        self.down2 = downsample(64, 128, 4, True)
-        self.down3 = downsample(128, 256, 4, True)
+# class Discriminator(nn.Module):
+#     def __init__(self):
+#         super(Discriminator, self).__init__()
+#         self.down1 = downsample(3, 64, 4, False)
+#         self.down2 = downsample(64, 128, 4, True)
+#         self.down3 = downsample(128, 256, 4, True)
 
-        self.conv = nn.Conv2d(256, 512, kernel_size=4, stride=1, padding=1, bias=False)
-        self.bn1 = nn.BatchNorm2d(512)
-        self.leaky_relu = nn.LeakyReLU(0.2, inplace=False)  
-        self.last = nn.Conv2d(512, 1, kernel_size=4, stride=1, padding=1)
+#         self.conv = nn.Conv2d(256, 512, kernel_size=4, stride=1, padding=1, bias=False)
+#         self.bn1 = nn.BatchNorm2d(512)
+#         self.leaky_relu = nn.LeakyReLU(0.2, inplace=False)  
+#         self.last = nn.Conv2d(512, 1, kernel_size=4, stride=1, padding=1)
+#         self.loss = nn.BCELoss()
+
+#     def forward(self, inp, tar):
+#         x = torch.cat([inp, tar], dim=1)
+
+#         x = self.down1(x)
+#         x = self.down2(x)
+#         x = self.down3(x)
+
+#         x = F.pad(x, (0, 1, 0, 1))
+#         x = self.conv(x)
+#         x = self.bn1(x)
+#         x = self.leaky_relu(x)
+
+#         x = F.pad(x, (0, 1, 0, 1))
+#         x = self.last(x)
+#         x = torch.sigmoid(x)
+#         return x
+
+#     def discriminator_loss_real(self, real_output):
+#         real_loss = self.loss(real_output, torch.ones_like(real_output))
+#         return real_loss
+#     def discriminator_loss_fake(self, fake_output):
+#         fake_loss = self.loss(fake_output, torch.zeros_like(fake_output))
+#         return fake_loss
+
+
+class Discriminator(nn.Module):
+    def __init__(self, in_channels=3, out_channels=64, kernel_size=4, stride=2, padding=1):
+        super(Discriminator, self).__init__()
+        
+        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=kernel_size, stride=stride, padding=padding)
+        self.conv2 = nn.Conv2d(out_channels, out_channels * 2, kernel_size=kernel_size, stride=stride, padding=padding, bias=False)
+        self.conv2_bn = nn.BatchNorm2d(out_channels * 2)
+        self.conv3 = nn.Conv2d(out_channels * 2, out_channels * 4, kernel_size=kernel_size, stride=stride, padding=padding, bias=False)
+        self.conv3_bn = nn.BatchNorm2d(out_channels * 4)
+        self.conv4 = nn.Conv2d(out_channels * 4, out_channels * 8, kernel_size=kernel_size, stride=1, padding=padding, bias=False)
+        self.conv4_bn = nn.BatchNorm2d(out_channels * 8)
+        self.conv5 = nn.Conv2d(out_channels * 8, 1, kernel_size=kernel_size, stride=1, padding=padding)
         self.loss = nn.BCELoss()
 
-    def forward(self, inp, tar):
-        x = torch.cat([inp, tar], dim=1)
-
-        x = self.down1(x)
-        x = self.down2(x)
-        x = self.down3(x)
-
-        x = F.pad(x, (0, 1, 0, 1))
-        x = self.conv(x)
-        x = self.bn1(x)
-        x = self.leaky_relu(x)
-
-        x = F.pad(x, (0, 1, 0, 1))
-        x = self.last(x)
-        x = torch.sigmoid(x)
+    def forward(self, gray_image,ab_image):
+        x = torch.cat([gray_image, ab_image], dim=1)
+        x = F.leaky_relu(self.conv1(x), 0.2, inplace=False)
+        x = F.leaky_relu(self.conv2_bn(self.conv2(x)), 0.2, inplace=False)
+        x = F.leaky_relu(self.conv3_bn(self.conv3(x)), 0.2, inplace=False)
+        x = F.leaky_relu(self.conv4_bn(self.conv4(x)), 0.2, inplace=False)
+        x = torch.sigmoid(self.conv5(x))
         return x
-
+        
     def discriminator_loss_real(self, real_output):
         real_loss = self.loss(real_output, torch.ones_like(real_output))
         return real_loss
