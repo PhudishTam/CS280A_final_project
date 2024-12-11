@@ -5,10 +5,10 @@
     "test_data_dir":  "/accounts/grad/phudish_p/CS280A_final_project/initData/MS_COCO/test_set/test2017",
     "test_annotation_file": "/accounts/grad/phudish_p/CS280A_final_project/initData/MS_COCO/test_set/annotations/captions_test2017.json",
     "device" : "cuda",
-    "tokenizer" : "openai/clip-vit-base-patch32",
+    "tokenizer_name" : "t5-small",
+    "text_encoder_name" : "t5-small",
+    "model_name" : "google/vit-base-patch16-224-in21k",
     "epochs" : 100,
     "lr" : 1e-3,
-    "vae_name" : "stabilityai/sd-vae-ft-mse",
-    "text_encoder_name" : "openai/clip-vit-base-patch32",
-    "batch_size" : 2048
+    "batch_size" : 128
 }

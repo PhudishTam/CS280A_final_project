@@ -3,15 +3,15 @@ import os
 import torchvision.transforms as T
 from PIL import Image
 from torchvision import transforms
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset
 import json
-from torchvision.transforms.functional import rgb_to_grayscale
 import torch 
-from skimage.color import rgb2lab, lab2rgb
+from skimage.color import rgb2lab
 import numpy as np
-import warnings
 from sklearn.neighbors import NearestNeighbors
-
+import pickle
+from scipy.spatial import cKDTree
+import faiss
 # class ScaleChroma:
 #     def __init__(self, scale_range=(1.0, 1.2), probability=0.1):
 #         self.scale_range = scale_range
@@ -55,14 +55,18 @@ class Datasetcoloritzation(Dataset):
     '''
     A class used to represent a dataset for colorization.
     '''
-    def __init__(self, data_dir,annotation_file1,annotation_file2=None,device=None, image_size=512, tokenizer=None, training=True, max_length=128, ab_grid_size=10):
+    def __init__(self, data_dir,annotation_file1,annotation_file2=None,device=None, image_size=512, tokenizer=None, training=True, max_length=128):
         self.data_dir = data_dir
         self.image_size = image_size
         self.tokenizer = tokenizer
         self.training = training
         self.device = device
         self.data_types = {}
-        self.ab_grid_size = ab_grid_size
+        # self.ab_bins_path = ab_bins_path
+        # self.ab_bins = np.load(ab_bins_path).astype("float32")
+        # self.index = faiss.IndexFlatL2(self.ab_bins.shape[1])
+        # self.index.add(self.ab_bins)
+        # self.global_histogram = np.zeros(self.ab_bins.shape[0])
         if self.training and annotation_file1 is not None and annotation_file2 is not None:
             self.coco = COCO(annotation_file1)
             coco_img_ids = list(self.coco.imgs.keys())
@@ -95,55 +99,57 @@ class Datasetcoloritzation(Dataset):
         #     T.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
         #     #T.RandomApply([ScaleChroma(scale_range=(1.0, 1.2))], p=0.1),
         # ])
-        self.transform = T.Compose([
-            T.Resize((self.image_size, self.image_size), T.InterpolationMode.BICUBIC),
-            T.ToTensor(),
-            T.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
-        ])
+        if self.training:
+            self.transform = T.Compose([
+                T.Resize((self.image_size, self.image_size), T.InterpolationMode.BICUBIC),
+                T.ToTensor(),
+                T.RandomHorizontalFlip(),
+            ])
+        else:
+            self.transform = T.Compose([
+                T.Resize((self.image_size, self.image_size), T.InterpolationMode.BICUBIC),
+                T.ToTensor(),
+            ])
         
         self.max_length = max_length
-        self.ab_bins = self.compute_ab_bins()
-        self.nearest_neighbors = NearestNeighbors(n_neighbors=5, algorithm='ball_tree').fit(self.ab_bins) 
-   
-   
-    def compute_ab_bins(self):
-        """
-        Function to create the ab bins for the colorization task. 
-        """
-        a = np.arange(-128, 128, self.ab_grid_size)
-        b = np.arange(-128, 128, self.ab_grid_size)
-        aa,bb = np.meshgrid(a,b)
-        ab_bins = np.stack([aa.ravel(), bb.ravel()], axis=1)
-        # valid_ab_bins = []
-        # for ab in ab_bins:
-        #     lab = np.zeros((1, 1, 3))
-        #     lab[:, :, 1:] = ab
-        #     lab[:, :, 0] = 50
-        #     rgb = lab2rgb(lab)
-        #     if (rgb >=0).all() and (rgb <= 1).all():
-        #         valid_ab_bins.append(ab)
-                
-        # self.valid_ab_bins = np.array(valid_ab_bins)
-        # print(f"Number of valid ab bins: {len(self.valid_ab_bins)}")
-        #return self.valid_ab_bins
-        print(f"Number of ab bins: {len(ab_bins)}")
-        return ab_bins
+        # self.nearest_neighbors = NearestNeighbors(n_neighbors=1, algorithm='auto',n_jobs=-1).fit(self.ab_bins) 
+        # self.gaussian_sigma = 5
+        # self.lambda_ = 0.5
+        # # self.color_distribution_path = color_distribution_path
+        # with open(color_distribution_path, 'rb') as f:
+        #     data = pickle.load(f)
+        #     self.color_distribution = data  # If you need this
+        #     self.p = data['p']
+        #     self.p_smoothed = data['p_smoothed']
+        #     self.w = data['w']
+            
+    # def quantize_ab(self, ab_values):
+    #     """
+    #     Function to quantize the ab values to the nearest ab bin. 
+    #     """
+    #     ab_values = ab_values.astype("float32")
+    #     distances, indices = self.nearest_neighbors.kneighbors(ab_values)
+    #     # weights = np.exp(-distances**2 / (2 * self.gaussian_sigma**2))
+    #     # weights /= (np.sum(weights, axis=1, keepdims=True))
+    #     soft_encoded = np.zeros((ab_values.shape[0], self.ab_bins.shape[0]))
+    #     # for i in range(ab_values.shape[0]):
+    #     #     soft_encoded[i, indices[i]] = 1
+    #     for i in range(ab_values.shape[0]):
+    #         soft_encoded[i, indices[i]] = 1
+    #     return soft_encoded
+    
+    
+    # def get_v(self, soft_encoded_ab):
+    #     """
+    #     Get the v values for the soft encoded ab values
         
-         
-    def quantize_ab(self, ab_values):
-        """
-        Function to quantize the ab values to the nearest ab bin. 
-        """
-        ab_values = ab_values.reshape(-1, 2)
-        distances, indices = self.nearest_neighbors.kneighbors(ab_values)
-        weights = np.exp(-distances ** 2 / (2 * (5 ** 2)))
-        weights /= weights.sum(axis=1, keepdims=True)
-        soft_encoding = np.zeros((ab_values.shape[0], len(self.ab_bins)))
-        #soft_encoding = np.zeros((ab_values.shape[0], len(self.valid_ab_bins)))
-        for i, neighbors in enumerate(indices):
-            soft_encoding[i, neighbors] = weights[i]
-        return soft_encoding
-        
+    #     Args:
+    #         soft_encoded_ab: Tensor of shape (batch_size, H, W, num_bins)
+    #     """ 
+    #     q_star = np.argmax(soft_encoded_ab, axis=-1)
+    #     v = self.w[q_star]
+    #     return v
+     
     def __getitem__(self, idx):
         if self.training:
             img_id = self.image_ids[idx]
@@ -183,16 +189,31 @@ class Datasetcoloritzation(Dataset):
         else:
             tokenized_caption = None
         
+        lab_image = rgb2lab(image_resized.permute(1, 2, 0).numpy())
+        l_channel = lab_image[:, :, 0:1]
+        l_channel = l_channel / 50.0 - 1.0
+        ab_channels = lab_image[:, :, 1:] 
+        ab_channels = ab_channels / 110.0       
+        #print(f"Shape of ab_channels: {ab_channels.shape}")
+        # ab_flat = ab_channels.reshape(-1, 2)
+        # #print(f"Shape of ab_flat: {ab_flat.shape}")
+        # # quantized_ab = self.quantize_ab(ab_flat)
+        # # soft_encoded_ab = quantized_ab.reshape(ab_channels.shape[0], ab_channels.shape[1], -1)
+        # # get_v = self.get_v(soft_encoded_ab)
+        # #print(f"Shape of quatnized_ab_image: {quatnized_ab_image.shape}")
         return {
             'gray_image': gray_image.to(self.device),
             'color_image': image_resized.to(self.device),
-            'caption': tokenized_caption.to(self.device) if tokenized_caption else None,
+            'l_channels': torch.tensor(l_channel).to(self.device),
+            'ab_channels': torch.tensor(ab_channels).to(self.device),
+            'caption': tokenized_caption if tokenized_caption else None,
             "caption_text": captions,
             "img_path": img_path
         }
     
     def __len__(self):
         return len(self.image_ids)
+
 
 # if __name__ == '__main__':
     # data_dir = "../../initData/MS_COCO/val_set/val2017"
