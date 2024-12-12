@@ -6,7 +6,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from GAN import Generator, Discriminator, Generator_pretrained, Generator_Unet
+from GAN_text import Generator_Unet, Discriminator
 from tqdm import tqdm
 import os 
 from torch.utils.data import DataLoader
@@ -22,7 +22,7 @@ def count_parameters(model):
 
 def ddp_setup(rank, world_size):
     os.environ['MASTER_ADDR'] = 'localhost'
-    os.environ['MASTER_PORT'] = '29500'
+    os.environ['MASTER_PORT'] = '29501'
     torch.cuda.set_device(rank)
     init_process_group(backend="nccl", rank=rank, world_size=world_size)
     print(f"Rank {rank}: DDP setup complete.")
@@ -110,6 +110,7 @@ def train_test_epochs(generator, discriminator, text_encoder_name, train_loader,
     optimizer_D = optim.Adam(discriminator.parameters(), lr=lr, betas=(0.5, 0.999))
     generator = generator.to(device)
     discriminator = discriminator.to(device)
+    text_encoder = T5EncoderModel.from_pretrained(text_encoder_name).to(device)
 
     # Attempt to load from the base_save_path
     start_epoch, train_generator_losses, train_generator_bce_losses, train_generator_l1_losses, test_generator_losses, test_generator_bce_losses, test_generator_l1_losses, train_discriminator_losses, test_discriminator_losses = load_checkpoint(generator, discriminator, optimizer_G, optimizer_D, base_save_path, rank=rank)
@@ -133,16 +134,18 @@ def train_test_epochs(generator, discriminator, text_encoder_name, train_loader,
                 if pre_train_model:
                     gray_images = gray_images.repeat(1, 3, 1, 1)
                 ab_images = batch["ab_channels"].to(device).permute(0, 3, 1, 2)
-                # with torch.no_grad():
-                #     text_outputs = text_encoder(**tokenized_caption)
-                #     text_hidden_state = text_outputs.last_hidden_state
-                #     attention_mask = tokenized_caption["attention_mask"]
-                #     seq_length = attention_mask.sum(dim=1)
-                #     last_token_position = seq_length - 1
-                #     batch_indices = torch.arange(text_hidden_state.shape[0]).to(device)
-                #     text_embedding = text_hidden_state[batch_indices, last_token_position, :]
-
-                fake_ab = generator(gray_images)
+                tokenized_caption = {key: value.to(device) for key, value in batch["caption"].items()}
+                with torch.no_grad():
+                    text_outputs = text_encoder(**tokenized_caption)
+                    text_hidden_state = text_outputs.last_hidden_state
+                    attention_mask = tokenized_caption["attention_mask"]
+                    seq_length = attention_mask.sum(dim=1)
+                    last_token_position = seq_length - 1
+                    batch_indices = torch.arange(text_hidden_state.shape[0]).to(device)
+                    text_embedding = text_hidden_state[batch_indices, last_token_position, :]
+                
+                #print(f"Shape of text_embedding: {text_embedding.shape}")
+                fake_ab = generator(gray_images, text_embedding)
                 fake_prediction = discriminator(gray_images_input.detach(), fake_ab.detach())
                 loss_D_fake = discriminator.module.discriminator_loss_fake(fake_prediction)
 
@@ -199,20 +202,21 @@ def train_test_epochs(generator, discriminator, text_encoder_name, train_loader,
             if pre_train_model:
                 gray_images = gray_images.repeat(1, 3, 1, 1)
             ab_images = batch["ab_channels"].to(device).permute(0, 3, 1, 2)
-            # tokenized_caption = {key: value.to(device) for key, value in batch["caption"].items()}
-            # text_outputs = text_encoder(**tokenized_caption)
-            # text_hidden_state = text_outputs.last_hidden_state
-            # attention_mask = tokenized_caption["attention_mask"]
-            # seq_length = attention_mask.sum(dim=1)
-            # last_token_position = seq_length - 1
-            # batch_indices = torch.arange(text_hidden_state.shape[0]).to(device)
-            # text_embedding = text_hidden_state[batch_indices, last_token_position, :]
+            tokenized_caption = {key: value.to(device) for key, value in batch["caption"].items()}
+            text_outputs = text_encoder(**tokenized_caption)
+            text_hidden_state = text_outputs.last_hidden_state
+            attention_mask = tokenized_caption["attention_mask"]
+            seq_length = attention_mask.sum(dim=1)
+            last_token_position = seq_length - 1
+            batch_indices = torch.arange(text_hidden_state.shape[0]).to(device)
+            text_embedding = text_hidden_state[batch_indices, last_token_position, :]
             
             gray_images = gray_images.contiguous()
             gray_images_input = gray_images_input.contiguous()
             ab_images = ab_images.contiguous()
+            text_embedding = text_embedding.contiguous()
            
-            fake_ab = generator(gray_images)
+            fake_ab = generator(gray_images, text_embedding)
             fake_ab = fake_ab.contiguous()
             fake_prediction = discriminator(gray_images_input.detach(), fake_ab.detach())
             loss_D_fake = discriminator.module.discriminator_loss_fake(fake_prediction)
@@ -235,6 +239,8 @@ def train_test_epochs(generator, discriminator, text_encoder_name, train_loader,
             running_gen_bce_loss += generator_bce.item()
             running_gen_l1_loss += l1_loss.item()
             running_disc_loss += loss_D.item()
+            
+        
         running_gen_loss_tensor = torch.tensor([running_gen_loss]).to(device)
         running_gen_bce_loss_tensor = torch.tensor([running_gen_bce_loss]).to(device)
         running_gen_l1_loss_tensor = torch.tensor([running_gen_l1_loss]).to(device)
@@ -253,7 +259,7 @@ def train_test_epochs(generator, discriminator, text_encoder_name, train_loader,
         train_generator_bce_losses.append(mean_gen_bce_loss)
         train_generator_l1_losses.append(mean_gen_l1_loss)
         train_discriminator_losses.append(mean_disc_loss)
-          
+            
         if rank == 0:
             for param_group in optimizer_G.param_groups:
                 print(f"Generator Learning Rate: {param_group['lr']}")
@@ -276,16 +282,17 @@ def train_test_epochs(generator, discriminator, text_encoder_name, train_loader,
                 if pre_train_model:
                     gray_images = gray_images.repeat(1, 3, 1, 1)
                 ab_images = batch["ab_channels"].to(device).permute(0, 3, 1, 2).contiguous()
-                # with torch.no_grad():
-                #     text_outputs = text_encoder(**tokenized_caption)
-                #     text_hidden_state = text_outputs.last_hidden_state
-                #     attention_mask = tokenized_caption["attention_mask"]
-                #     seq_length = attention_mask.sum(dim=1)
-                #     last_token_position = seq_length - 1
-                #     batch_indices = torch.arange(text_hidden_state.shape[0]).to(device)
-                #     text_embedding = text_hidden_state[batch_indices, last_token_position, :]
+                tokenized_caption = {key: value.to(device) for key, value in batch["caption"].items()}
+                with torch.no_grad():
+                    text_outputs = text_encoder(**tokenized_caption)
+                    text_hidden_state = text_outputs.last_hidden_state
+                    attention_mask = tokenized_caption["attention_mask"]
+                    seq_length = attention_mask.sum(dim=1)
+                    last_token_position = seq_length - 1
+                    batch_indices = torch.arange(text_hidden_state.shape[0]).to(device)
+                    text_embedding = text_hidden_state[batch_indices, last_token_position, :]
 
-                fake_ab = generator(gray_images).contiguous()
+                fake_ab = generator(gray_images,text_embedding)
                 fake_prediction = discriminator(gray_images_input.detach(), fake_ab.detach())
                 loss_D_fake = discriminator.module.discriminator_loss_fake(fake_prediction)
 
@@ -378,8 +385,8 @@ if __name__ == "__main__":
     
     print(f"Rank {rank}: Creating data loaders...")
     #Subset the dataset for testing or debugging, if desired
-    # max_train_samples = 2000
-    # max_test_samples = 1000
+    # max_train_samples = 100
+    # max_test_samples = 20
     # train_dataset = Subset(train_dataset, range(max_train_samples))
     # test_dataset = Subset(test_dataset, range(max_test_samples))
     train_sampler = DistributedSampler(train_dataset)
