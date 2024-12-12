@@ -9,15 +9,16 @@ import torchvision
 import numpy as np
 from skimage import color
 import cv2
+import os 
 
 
 
 if __name__ == "__main__":
     print("Start loading the model")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    #model = Generator().to(device)
+    # model = Generator().to(device)
     model = Generator_Unet().to(device)
-    checkpoint = torch.load('/accounts/grad/phudish_p/CS280A_final_project/model_saved/GAN_experiment_2_G_2.pt')
+    checkpoint = torch.load('/accounts/grad/phudish_p/CS280A_final_project/model_saved/GAN_experiment_3_G_2.pt')
     print(checkpoint.keys())   
     print(checkpoint["epoch"])
     print(checkpoint["train_generator_losses"])
@@ -36,10 +37,17 @@ if __name__ == "__main__":
                                             training=False,
                                             image_size=256)
     
-    validation_dataset = Subset(validation_dataset, range(16), shuffle=True)
-    validation_dataloader = DataLoader(validation_dataset, batch_size=8, shuffle=True)
+    #validation_dataset = Subset(validation_dataset, range(16))
+    validation_dataloader = DataLoader(validation_dataset, batch_size=16, shuffle=True)
     image_generated = 0
     real_image_count = 0
+
+    # Create directories to save images
+    fake_image_dir = "fake_images"
+    real_image_dir = "real_images"
+    os.makedirs(fake_image_dir, exist_ok=True)
+    os.makedirs(real_image_dir, exist_ok=True)
+
     with torch.no_grad():
         for batch in validation_dataloader:
             # Get L and ab channels
@@ -56,16 +64,14 @@ if __name__ == "__main__":
             fake_image = torch.cat((L, fake_ab), dim=1).detach().cpu().numpy()
             real_image = torch.cat((L, ab), dim=1).detach().cpu().numpy()
 
-            
-            for index,img in enumerate(fake_image):
+            for index, img in enumerate(fake_image):
                 img = img.transpose(1, 2, 0)
                 img = cv2.cvtColor(img, cv2.COLOR_LAB2BGR)
-                cv2.imwrite(f"fake_image_{image_generated}.png", (img * 255).astype(np.uint8))
+                cv2.imwrite(os.path.join(fake_image_dir, f"fake_image_{image_generated}.png"), (img * 255).astype(np.uint8))
                 image_generated += 1
             
-            for index,img in enumerate(real_image):
+            for index, img in enumerate(real_image):
                 img = img.transpose(1, 2, 0)
                 img = cv2.cvtColor(img, cv2.COLOR_LAB2BGR)
-                cv2.imwrite(f"real_image_{real_image_count}.png", (img * 255).astype(np.uint8))
+                cv2.imwrite(os.path.join(real_image_dir, f"real_image_{real_image_count}.png"), (img * 255).astype(np.uint8))
                 real_image_count += 1
-            

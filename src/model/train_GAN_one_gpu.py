@@ -20,7 +20,7 @@ def count_parameters(model):
 
 # Modified save_checkpoint function
 def save_checkpoint(generator, discriminator, optimizer_G, optimizer_D, epoch,
-                    train_generator_losses, test_generator_losses,
+                    train_generator_losses, train_generator_bce_losses,train_generator_l1_losses,test_generator_losses, test_generator_bce_losses, test_generator_l1_losses,
                     train_discriminator_losses, test_discriminator_losses,
                     base_save_path):
     if (epoch + 1) % 2 == 1:
@@ -37,6 +37,10 @@ def save_checkpoint(generator, discriminator, optimizer_G, optimizer_D, epoch,
         'epoch': epoch,
         'train_generator_losses': train_generator_losses,
         'test_generator_losses': test_generator_losses,
+        'train_generator_bce_losses': train_generator_bce_losses,
+        'test_generator_bce_losses': test_generator_bce_losses,
+        'train_generator_l1_losses': train_generator_l1_losses,
+        'test_generator_l1_losses': test_generator_l1_losses,
     }
     torch.save(checkpoint_G, save_path_G)
 
@@ -62,6 +66,11 @@ def load_checkpoint(generator, discriminator, optimizer_G, optimizer_D, base_sav
         epoch = checkpoint_G['epoch']
         train_generator_losses = checkpoint_G.get('train_generator_losses', [])
         test_generator_losses = checkpoint_G.get('test_generator_losses', [])
+        train_generator_bce_losses = checkpoint_G.get('train_generator_bce_losses', [])
+        test_generator_bce_losses = checkpoint_G.get('test_generator_bce_losses', [])
+        train_generator_l1_losses = checkpoint_G.get('train_generator_l1_losses', [])
+        test_generator_l1_losses = checkpoint_G.get('test_generator_l1_losses', [])
+        
 
         print(f"Loading discriminator checkpoint from {save_path_D}")
         checkpoint_D = torch.load(save_path_D)
@@ -70,10 +79,10 @@ def load_checkpoint(generator, discriminator, optimizer_G, optimizer_D, base_sav
         train_discriminator_losses = checkpoint_D.get('train_discriminator_losses', [])
         test_discriminator_losses = checkpoint_D.get('test_discriminator_losses', [])
 
-        return epoch, train_generator_losses, test_generator_losses, train_discriminator_losses, test_discriminator_losses
+        return epoch, train_generator_losses, test_generator_losses, train_discriminator_losses, test_discriminator_losses, train_generator_bce_losses, test_generator_bce_losses, train_generator_l1_losses, test_generator_l1_losses
     else:
         print(f"No checkpoint found")
-        return 0, [], [], [], []
+        return 0, [], [], [], [], [], [], [], []
     
 def normal_init(m, mean=0.0, std=0.02):
     if isinstance(m, (nn.ConvTranspose2d, nn.Conv2d)):
@@ -81,7 +90,7 @@ def normal_init(m, mean=0.0, std=0.02):
         if m.bias is not None:
             nn.init.constant_(m.bias, 0)
             
-def train_test_epochs(generator, discriminator, text_encoder_name, train_loader, test_loader, epochs, lr, device, base_save_path, pre_train_model=False):
+def train_test_epochs(generator, discriminator, text_encoder_name, train_loader, test_loader, epochs, lr, device, base_save_path, pre_train_model=False, lamb=100):
     torch.autograd.set_detect_anomaly(True)
     print("Initializing training...")
     optimizer_G = optim.Adam(generator.parameters(), lr=lr, betas=(0.5, 0.999))
@@ -91,7 +100,7 @@ def train_test_epochs(generator, discriminator, text_encoder_name, train_loader,
     text_encoder = T5EncoderModel.from_pretrained(text_encoder_name).to(device)
 
     # Attempt to load from the base_save_path
-    start_epoch, train_generator_losses, test_generator_losses, train_discriminator_losses, test_discriminator_losses = load_checkpoint(generator, discriminator, optimizer_G, optimizer_D, base_save_path)
+    start_epoch, train_generator_losses, test_generator_losses, train_discriminator_losses, test_discriminator_losses, train_generator_bce_losses, test_generator_bce_losses, train_generator_l1_losses, test_generator_l1_losses = load_checkpoint(generator, discriminator, optimizer_G, optimizer_D, base_save_path)
     print(f"Starting from epoch {start_epoch}")
 
     # Initial test evaluation
@@ -99,6 +108,8 @@ def train_test_epochs(generator, discriminator, text_encoder_name, train_loader,
         generator.eval()
         discriminator.eval()
         initial_generator_test_loss = 0.0
+        initial_generator_bce_loss = 0.0
+        initial_generator_l1_loss = 0.0
         initial_discriminator_test_loss = 0.0
         print("Starting initial test evaluation...")
         with torch.no_grad():
@@ -126,17 +137,26 @@ def train_test_epochs(generator, discriminator, text_encoder_name, train_loader,
                 loss_D = (loss_D_fake + loss_D_real) / 2
                 
                 fake_prediction = discriminator(gray_images_input, fake_ab)
-                loss_G = generator.generator_loss(fake_prediction, fake_ab, ab_images)
+                generator_bce, l1_loss = generator.generator_loss(fake_prediction, fake_ab, ab_images)
+                loss_G = generator_bce + lamb * l1_loss
+                
                 
                 initial_generator_test_loss += loss_G.item()
+                initial_generator_bce_loss += generator_bce.item()
+                initial_generator_l1_loss += l1_loss.item()
                 initial_discriminator_test_loss += loss_D.item()
                 
         initial_generator_test_loss /= len(test_loader)
         initial_discriminator_test_loss /= len(test_loader)
         test_generator_losses.append(initial_generator_test_loss)
+        test_generator_bce_losses.append(initial_generator_bce_loss)
+        test_generator_l1_losses.append(initial_generator_l1_loss)
         test_discriminator_losses.append(initial_discriminator_test_loss)
+    
         
         print(f"Initial Generator Test Loss: {initial_generator_test_loss}")
+        print(f"Initial Generator BCE Test Loss: {initial_generator_bce_loss}")
+        print(f"Initial Generator L1 Test Loss: {initial_generator_l1_loss}")
         print(f"Initial Discriminator Test Loss: {initial_discriminator_test_loss}")
     
     for epoch in range(start_epoch, epochs):
@@ -170,12 +190,15 @@ def train_test_epochs(generator, discriminator, text_encoder_name, train_loader,
             optimizer_D.step()
             
             fake_prediction = discriminator(gray_images_input, fake_ab)
-            loss_G = generator.generator_loss(fake_prediction, fake_ab, ab_images)
+            generator_bce, l1_loss = generator.generator_loss(fake_prediction, fake_ab, ab_images)
+            loss_G = generator_bce + lamb * l1_loss
             optimizer_G.zero_grad()
             loss_G.backward()
             optimizer_G.step()
             
             train_generator_losses.append(loss_G.item())
+            train_generator_bce_losses.append(generator_bce.item())
+            train_generator_l1_losses.append(l1_loss.item())
             train_discriminator_losses.append(loss_D.item())
 
         for param_group in optimizer_G.param_groups:
@@ -186,6 +209,8 @@ def train_test_epochs(generator, discriminator, text_encoder_name, train_loader,
         generator.eval()
         discriminator.eval()
         test_generator_loss = 0.0
+        test_generator_bce_loss = 0.0
+        test_generator_l1_loss = 0.0
         test_discriminator_loss = 0.0
         print(f"Starting test evaluation for epoch {epoch+1}/{epochs}...")
         with torch.no_grad():
@@ -213,22 +238,37 @@ def train_test_epochs(generator, discriminator, text_encoder_name, train_loader,
                 loss_D = (loss_D_fake + loss_D_real) / 2
                 
                 fake_prediction = discriminator(gray_images_input, fake_ab)
-                loss_G = generator.generator_loss(fake_prediction, fake_ab, ab_images)
+                generator_bce, l1_loss = generator.generator_loss(fake_prediction, fake_ab, ab_images)
+                loss_G = generator_bce + lamb * l1_loss
+                #loss_G = generator.generator_loss(fake_prediction, fake_ab, ab_images)
                 
                 test_generator_loss += loss_G.item()
+                test_generator_bce_loss += generator_bce.item()
+                test_generator_l1_loss += l1_loss.item()
                 test_discriminator_loss += loss_D.item()
             
         test_generator_loss /= len(test_loader)
         test_generator_losses.append(test_generator_loss)
+        test_generator_bce_loss /= len(test_loader)
+        test_generator_bce_losses.append(test_generator_bce_loss)
+        test_generator_l1_loss /= len(test_loader)
+        test_generator_l1_losses.append(test_generator_l1_loss)
         test_discriminator_loss /= len(test_loader)
         test_discriminator_losses.append(test_discriminator_loss)
         
-        print(f"Epoch {epoch+1}/{epochs} Generator Train Loss: {np.mean(train_generator_losses)}, test loss: {test_generator_loss}")
-        print(f"Epoch {epoch+1}/{epochs} Discriminator Train Loss: {np.mean(train_discriminator_losses)}, test loss: {test_discriminator_loss}")
+        print(f"Epoch {epoch+1}/{epochs} Generator Train Loss: {np.mean(train_generator_losses)}")
+        print(f"Epoch {epoch+1}/{epochs} Generator Train BCE Loss: {np.mean(train_generator_bce_losses)}")
+        print(f"Epoch {epoch+1}/{epochs} Generator Train L1 Loss: {np.mean(train_generator_l1_losses)}")
+        print(f"Epoch {epoch+1}/{epochs} Discriminator Train Loss: {np.mean(train_discriminator_losses)}")
+        print(f"Epoch {epoch+1}/{epochs} Generator Test Loss: {test_generator_loss}")
+        print(f"Epoch {epoch+1}/{epochs} Generator Test BCE Loss: {test_generator_bce_loss}")
+        print(f"Epoch {epoch+1}/{epochs} Generator Test L1 Loss: {test_generator_l1_loss}")
+        print(f"Epoch {epoch+1}/{epochs} Discriminator Test Loss: {test_discriminator_loss}")
         
-        save_checkpoint(generator, discriminator, optimizer_G, optimizer_D, epoch, train_generator_losses, test_generator_losses, train_discriminator_losses, test_discriminator_losses, base_save_path)
+        save_checkpoint(generator, discriminator, optimizer_G, optimizer_D, epoch, train_generator_losses, train_generator_bce_losses,train_generator_l1_losses,
+                        test_generator_losses, test_generator_bce_losses,test_generator_l1_losses ,train_discriminator_losses, test_discriminator_losses, base_save_path)
     
-    return np.array(train_generator_losses), np.array(test_generator_losses), np.array(train_discriminator_losses), np.array(test_discriminator_losses)
+    return np.array(train_generator_losses),np.array(train_generator_bce_losses),np.array(train_generator_l1_losses),np.array(test_generator_losses), np.array(test_generator_bce_losses),np.array(test_generator_l1_losses),np.array(train_discriminator_losses), np.array(test_discriminator_losses)
 
 if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -263,10 +303,10 @@ if __name__ == "__main__":
     print(f"Number of testing samples: {len(test_dataset)}")
 
     print("Creating data loaders...")
-    max_train_samples = 8000
-    max_test_samples = 2000
-    train_dataset = Subset(train_dataset, range(max_train_samples))
-    test_dataset = Subset(test_dataset, range(max_test_samples))
+    # max_train_samples = 100
+    # max_test_samples = 20
+    # train_dataset = Subset(train_dataset, range(max_train_samples))
+    # test_dataset = Subset(test_dataset, range(max_test_samples))
     train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
     test_dataloader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
     print(f"batch_size: {batch_size}")

@@ -17,8 +17,6 @@ import torch.distributed as dist
 from torch.utils.data import Subset
 from transformers import T5EncoderModel, T5Tokenizer
 
-
-
 def count_parameters(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
@@ -29,11 +27,9 @@ def ddp_setup(rank, world_size):
     init_process_group(backend="nccl", rank=rank, world_size=world_size)
     print(f"Rank {rank}: DDP setup complete.")
 
-# def scale_image(image):
-#     return 2.0 * image - 1.0
-
 def save_checkpoint(generator, discriminator, optimizer_G, optimizer_D, epoch,
-                    train_generator_losses, test_generator_losses,
+                    train_generator_losses, train_generator_bce_losses, train_generator_l1_losses,
+                    test_generator_losses, test_generator_bce_losses, test_generator_l1_losses,
                     train_discriminator_losses, test_discriminator_losses,
                     base_save_path, rank=0):
     if rank == 0:
@@ -50,7 +46,11 @@ def save_checkpoint(generator, discriminator, optimizer_G, optimizer_D, epoch,
             'optimizer_state_dict': optimizer_G.state_dict(),
             'epoch': epoch,
             'train_generator_losses': train_generator_losses,
+            'train_generator_bce_losses': train_generator_bce_losses,
+            'train_generator_l1_losses': train_generator_l1_losses,
             'test_generator_losses': test_generator_losses,
+            'test_generator_bce_losses': test_generator_bce_losses,
+            'test_generator_l1_losses': test_generator_l1_losses,
         }
         torch.save(checkpoint_G, save_path_G)
         print(f"Rank {rank}: Generator checkpoint saved at {save_path_G} at the end of epoch {epoch+1}")
@@ -76,7 +76,11 @@ def load_checkpoint(generator, discriminator, optimizer_G, optimizer_D, base_sav
         optimizer_G.load_state_dict(checkpoint_G['optimizer_state_dict'])
         epoch = checkpoint_G['epoch']
         train_generator_losses = checkpoint_G.get('train_generator_losses', [])
+        train_generator_bce_losses = checkpoint_G.get('train_generator_bce_losses', [])
+        train_generator_l1_losses = checkpoint_G.get('train_generator_l1_losses', [])
         test_generator_losses = checkpoint_G.get('test_generator_losses', [])
+        test_generator_bce_losses = checkpoint_G.get('test_generator_bce_losses', [])
+        test_generator_l1_losses = checkpoint_G.get('test_generator_l1_losses', [])
         print(f"Rank {rank}: Generator checkpoint loaded from {save_path_G}")
 
         print(f"Rank {rank}: Loading discriminator checkpoint from {save_path_D}")
@@ -87,49 +91,49 @@ def load_checkpoint(generator, discriminator, optimizer_G, optimizer_D, base_sav
         test_discriminator_losses = checkpoint_D.get('test_discriminator_losses', [])
         print(f"Rank {rank}: Discriminator checkpoint loaded from {save_path_D}")
 
-        return epoch, train_generator_losses, test_generator_losses, train_discriminator_losses, test_discriminator_losses
+        return epoch, train_generator_losses, train_generator_bce_losses, train_generator_l1_losses, test_generator_losses, test_generator_bce_losses, test_generator_l1_losses, train_discriminator_losses, test_discriminator_losses
     else:
         if rank == 0:
             print(f"Rank {rank}: No checkpoint found at {save_path_G} or {save_path_D}")
-        return 0, [], [], [], []
-    
+        return 0, [], [], [], [], [], [], [], []
+
 def normal_init(m, mean=0.0, std=0.02):
     if isinstance(m, (nn.ConvTranspose2d, nn.Conv2d)):
         nn.init.normal_(m.weight, mean=mean, std=std)
         if m.bias is not None:
             nn.init.constant_(m.bias, 0)
-            
-def train_test_epochs(generator, discriminator, text_encoder_name, train_loader, test_loader, epochs, lr, device, base_save_path, rank, world_size,pre_train_model=False):
+
+def train_test_epochs(generator, discriminator, text_encoder_name, train_loader, test_loader, epochs, lr, device, base_save_path, rank, world_size, pre_train_model=False, lamb=100):
     torch.autograd.set_detect_anomaly(True)
     print(f"Rank {rank}: Initializing training...")
     optimizer_G = optim.Adam(generator.parameters(), lr=lr, betas=(0.5, 0.999))
     optimizer_D = optim.Adam(discriminator.parameters(), lr=lr, betas=(0.5, 0.999))
-    #scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs*len(train_loader), eta_min=0)
     generator = generator.to(device)
     discriminator = discriminator.to(device)
     text_encoder = T5EncoderModel.from_pretrained(text_encoder_name).to(device)
 
     # Attempt to load from the base_save_path
-    start_epoch, train_generator_losses, test_generator_losses, train_discriminator_losses, test_discriminator_losses = load_checkpoint(generator, discriminator, optimizer_G, optimizer_D, base_save_path, rank=rank)
+    start_epoch, train_generator_losses, train_generator_bce_losses, train_generator_l1_losses, test_generator_losses, test_generator_bce_losses, test_generator_l1_losses, train_discriminator_losses, test_discriminator_losses = load_checkpoint(generator, discriminator, optimizer_G, optimizer_D, base_save_path, rank=rank)
     print(f"Rank {rank}: Starting from epoch {start_epoch}")
-    #Initial test evaluation
+
+    # Initial test evaluation
     if start_epoch == 0:
         if isinstance(test_loader.sampler, DistributedSampler):
             test_loader.sampler.set_epoch(0)
         generator.eval()
         discriminator.eval()
         initial_generator_test_loss = 0.0
+        initial_generator_bce_loss = 0.0
+        initial_generator_l1_loss = 0.0
         initial_discriminator_test_loss = 0.0
         print(f"Rank {rank}: Starting initial test evaluation...")
         with torch.no_grad():
             for batch in tqdm(test_loader, desc=f"Initial Testing", disable=(rank!=0)):
-                gray_images = batch["l_channels"].to(device).permute(0,3,1,2)
+                gray_images = batch["l_channels"].to(device).permute(0, 3, 1, 2)
                 gray_images_input = gray_images.clone()
                 if pre_train_model:
-                    gray_images = gray_images.repeat(1,3,1,1)
-                    #print(f"Here")
-                    #print(f"Shape of gray_images: {gray_images.shape}")
-                ab_images = batch["ab_channels"].to(device).permute(0,3,1,2)
+                    gray_images = gray_images.repeat(1, 3, 1, 1)
+                ab_images = batch["ab_channels"].to(device).permute(0, 3, 1, 2)
                 tokenized_caption = {key: value.to(device) for key, value in batch["caption"].items()}
                 with torch.no_grad():
                     text_outputs = text_encoder(**tokenized_caption)
@@ -138,89 +142,97 @@ def train_test_epochs(generator, discriminator, text_encoder_name, train_loader,
                     seq_length = attention_mask.sum(dim=1)
                     last_token_position = seq_length - 1
                     batch_indices = torch.arange(text_hidden_state.shape[0]).to(device)
-                    text_embedding = text_hidden_state[batch_indices,last_token_position,:]
-                # print(f"Shape of gray_images: {gray_images.shape}")
-                # print(f"Shape of ab_images: {ab_images.shape}")
-                # print(f"Min value of gray_images: {gray_images.min()}")
-                # print(f"Max value of gray_images: {gray_images.max()}")
-                # print(f"Min value of ab_images: {ab_images.min()}")
-                # print(f"Max value of ab_images: {ab_images.max()}")
-                
+                    text_embedding = text_hidden_state[batch_indices, last_token_position, :]
+
                 fake_ab = generator(gray_images)
                 fake_prediction = discriminator(gray_images_input.detach(), fake_ab.detach())
                 loss_D_fake = discriminator.module.discriminator_loss_fake(fake_prediction)
-                
+
                 real_prediction = discriminator(gray_images_input, ab_images)
                 loss_D_real = discriminator.module.discriminator_loss_real(real_prediction)
                 loss_D = (loss_D_fake + loss_D_real) / 2
-                
+
                 fake_prediction = discriminator(gray_images_input, fake_ab)
-                loss_G = generator.module.generator_loss(fake_prediction, fake_ab, ab_images)
-                
-                
+                generator_bce, l1_loss = generator.module.generator_loss(fake_prediction, fake_ab, ab_images)
+                loss_G = generator_bce + lamb * l1_loss
+
                 initial_generator_test_loss += loss_G.item()
+                initial_generator_bce_loss += generator_bce.item()
+                initial_generator_l1_loss += l1_loss.item()
                 initial_discriminator_test_loss += loss_D.item()
-                
+
         initial_generator_test_loss_tensor = torch.tensor([initial_generator_test_loss]).to(device)
+        initial_generator_bce_loss_tensor = torch.tensor([initial_generator_bce_loss]).to(device)
+        initial_generator_l1_loss_tensor = torch.tensor([initial_generator_l1_loss]).to(device)
         initial_discriminator_test_loss_tensor = torch.tensor([initial_discriminator_test_loss]).to(device)
         dist.all_reduce(initial_generator_test_loss_tensor, op=dist.ReduceOp.SUM)
+        dist.all_reduce(initial_generator_bce_loss_tensor, op=dist.ReduceOp.SUM)
+        dist.all_reduce(initial_generator_l1_loss_tensor, op=dist.ReduceOp.SUM)
         dist.all_reduce(initial_discriminator_test_loss_tensor, op=dist.ReduceOp.SUM)
         initial_generator_test_loss = initial_generator_test_loss_tensor.item() / world_size / len(test_loader)
+        initial_generator_bce_loss = initial_generator_bce_loss_tensor.item() / world_size / len(test_loader)
+        initial_generator_l1_loss = initial_generator_l1_loss_tensor.item() / world_size / len(test_loader)
         initial_discriminator_test_loss = initial_discriminator_test_loss_tensor.item() / world_size / len(test_loader)
         test_generator_losses.append(initial_generator_test_loss)
+        test_generator_bce_losses.append(initial_generator_bce_loss)
+        test_generator_l1_losses.append(initial_generator_l1_loss)
         test_discriminator_losses.append(initial_discriminator_test_loss)
-        
+
         if rank == 0:
             print(f"Initial Generator Test Loss: {initial_generator_test_loss}")
+            print(f"Initial Generator BCE Test Loss: {initial_generator_bce_loss}")
+            print(f"Initial Generator L1 Test Loss: {initial_generator_l1_loss}")
             print(f"Initial Discriminator Test Loss: {initial_discriminator_test_loss}")
-    
+
     for epoch in range(start_epoch, epochs):
         if isinstance(train_loader.sampler, DistributedSampler):
             train_loader.sampler.set_epoch(epoch)
-        
+
         generator.train()
         discriminator.train()
         print(f"Rank {rank}: Starting epoch {epoch+1}/{epochs}")
         for batch in tqdm(train_loader, desc=f"Training Epoch {epoch+1}"):
-            with torch.no_grad():
-                gray_images = batch["l_channels"].to(device).permute(0,3,1,2)
-                gray_images_input = gray_images.clone()
-                if pre_train_model:
-                    gray_images = gray_images.repeat(1,3,1,1)
-                ab_images = batch["ab_channels"].to(device).permute(0,3,1,2)
-                tokenized_caption = {key: value.to(device) for key, value in batch["caption"].items()}
-                text_outputs = text_encoder(**tokenized_caption)
-                text_hidden_state = text_outputs.last_hidden_state
-                attention_mask = tokenized_caption["attention_mask"]
-                seq_length = attention_mask.sum(dim=1)
-                last_token_position = seq_length - 1
-                batch_indices = torch.arange(text_hidden_state.shape[0]).to(device)
-                text_embedding = text_hidden_state[batch_indices,last_token_position,:]
+            gray_images = batch["l_channels"].to(device).permute(0, 3, 1, 2)
+            gray_images_input = gray_images.clone()
+            if pre_train_model:
+                gray_images = gray_images.repeat(1, 3, 1, 1)
+            ab_images = batch["ab_channels"].to(device).permute(0, 3, 1, 2)
+            tokenized_caption = {key: value.to(device) for key, value in batch["caption"].items()}
+            text_outputs = text_encoder(**tokenized_caption)
+            text_hidden_state = text_outputs.last_hidden_state
+            attention_mask = tokenized_caption["attention_mask"]
+            seq_length = attention_mask.sum(dim=1)
+            last_token_position = seq_length - 1
+            batch_indices = torch.arange(text_hidden_state.shape[0]).to(device)
+            text_embedding = text_hidden_state[batch_indices, last_token_position, :]
+            
+            gray_images = gray_images.contiguous()
+            gray_images_input = gray_images_input.contiguous()
+            ab_images = ab_images.contiguous()
+            text_embedding = text_embedding.contiguous()
+           
             fake_ab = generator(gray_images)
+            fake_ab = fake_ab.contiguous()
             fake_prediction = discriminator(gray_images_input.detach(), fake_ab.detach())
             loss_D_fake = discriminator.module.discriminator_loss_fake(fake_prediction)
-            
+
             real_prediction = discriminator(gray_images_input, ab_images)
             loss_D_real = discriminator.module.discriminator_loss_real(real_prediction)
             loss_D = (loss_D_fake + loss_D_real) / 2
             optimizer_D.zero_grad()
             loss_D.backward()
             optimizer_D.step()
-            # for name, param in discriminator.named_parameters():
-            #     if param.grad is not None:
-            #         print(f"{name} grad sizes: {param.grad.size()}, strides: {param.grad.stride()}")
-            
+
             fake_prediction = discriminator(gray_images_input, fake_ab)
-            loss_G = generator.module.generator_loss(fake_prediction, fake_ab, ab_images)
+            generator_bce, l1_loss = generator.module.generator_loss(fake_prediction, fake_ab, ab_images)
+            loss_G = generator_bce + lamb * l1_loss
             optimizer_G.zero_grad()
             loss_G.backward()
             optimizer_G.step()
-            # for name, param in generator.named_parameters():
-            #     if param.grad is not None:
-            #         print(f"{name} grad sizes: {param.grad.size()}, strides: {param.grad.stride()}")
-            
-            #scheduler.step()
+
             train_generator_losses.append(loss_G.item())
+            train_generator_bce_losses.append(generator_bce.item())
+            train_generator_l1_losses.append(l1_loss.item())
             train_discriminator_losses.append(loss_D.item())
 
         if rank == 0:
@@ -228,21 +240,23 @@ def train_test_epochs(generator, discriminator, text_encoder_name, train_loader,
                 print(f"Generator Learning Rate: {param_group['lr']}")
             for param_group in optimizer_D.param_groups:
                 print(f"Discriminator Learning Rate: {param_group['lr']}")
-        
+
         generator.eval()
         discriminator.eval()
         test_generator_loss = 0.0
+        test_generator_bce_loss = 0.0
+        test_generator_l1_loss = 0.0
         test_discriminator_loss = 0.0
         if isinstance(test_loader.sampler, DistributedSampler):
             test_loader.sampler.set_epoch(epoch)
         print(f"Rank {rank}: Starting test evaluation for epoch {epoch+1}/{epochs}...")
         with torch.no_grad():
             for batch in tqdm(test_loader, desc=f"Testing Epoch {epoch+1}/{epochs}", disable=(rank!=0)):
-                gray_images = batch["l_channels"].to(device).permute(0,3,1,2)
+                gray_images = batch["l_channels"].to(device).permute(0, 3, 1, 2)
                 gray_images_input = gray_images.clone().contiguous()
                 if pre_train_model:
-                    gray_images = gray_images.repeat(1,3,1,1)
-                ab_images = batch["ab_channels"].to(device).permute(0,3,1,2).contiguous()
+                    gray_images = gray_images.repeat(1, 3, 1, 1)
+                ab_images = batch["ab_channels"].to(device).permute(0, 3, 1, 2).contiguous()
                 tokenized_caption = {key: value.to(device) for key, value in batch["caption"].items()}
                 with torch.no_grad():
                     text_outputs = text_encoder(**tokenized_caption)
@@ -251,40 +265,57 @@ def train_test_epochs(generator, discriminator, text_encoder_name, train_loader,
                     seq_length = attention_mask.sum(dim=1)
                     last_token_position = seq_length - 1
                     batch_indices = torch.arange(text_hidden_state.shape[0]).to(device)
-                    text_embedding = text_hidden_state[batch_indices,last_token_position,:]
-                
+                    text_embedding = text_hidden_state[batch_indices, last_token_position, :]
+
                 fake_ab = generator(gray_images).contiguous()
                 fake_prediction = discriminator(gray_images_input.detach(), fake_ab.detach())
                 loss_D_fake = discriminator.module.discriminator_loss_fake(fake_prediction)
-                
+
                 real_prediction = discriminator(gray_images_input, ab_images)
                 loss_D_real = discriminator.module.discriminator_loss_real(real_prediction)
                 loss_D = (loss_D_fake + loss_D_real) / 2
-                
-                
+
                 fake_prediction = discriminator(gray_images_input, fake_ab)
-                loss_G = generator.module.generator_loss(fake_prediction, fake_ab, ab_images)
-                
+                generator_bce, l1_loss = generator.module.generator_loss(fake_prediction, fake_ab, ab_images)
+                loss_G = generator_bce + lamb * l1_loss
+
                 test_generator_loss += loss_G.item()
+                test_generator_bce_loss += generator_bce.item()
+                test_generator_l1_loss += l1_loss.item()
                 test_discriminator_loss += loss_D.item()
-            
-        
+
         test_generator_loss_tensor = torch.tensor([test_generator_loss]).to(device)
+        test_generator_bce_loss_tensor = torch.tensor([test_generator_bce_loss]).to(device)
+        test_generator_l1_loss_tensor = torch.tensor([test_generator_l1_loss]).to(device)
         test_discriminator_loss_tensor = torch.tensor([test_discriminator_loss]).to(device)
         dist.all_reduce(test_generator_loss_tensor, op=dist.ReduceOp.SUM)
+        dist.all_reduce(test_generator_bce_loss_tensor, op=dist.ReduceOp.SUM)
+        dist.all_reduce(test_generator_l1_loss_tensor, op=dist.ReduceOp.SUM)
         dist.all_reduce(test_discriminator_loss_tensor, op=dist.ReduceOp.SUM)
         test_generator_loss = test_generator_loss_tensor.item() / world_size / len(test_loader)
+        test_generator_bce_loss = test_generator_bce_loss_tensor.item() / world_size / len(test_loader)
+        test_generator_l1_loss = test_generator_l1_loss_tensor.item() / world_size / len(test_loader)
         test_generator_losses.append(test_generator_loss)
+        test_generator_bce_losses.append(test_generator_bce_loss)
+        test_generator_l1_losses.append(test_generator_l1_loss)
         test_discriminator_loss = test_discriminator_loss_tensor.item() / world_size / len(test_loader)
         test_discriminator_losses.append(test_discriminator_loss)
-        
+
         if rank == 0:
-            print(f"Epoch {epoch+1}/{epochs} Generator Train Loss: {np.mean(train_generator_losses)}, test loss: {test_generator_loss}")
-            print(f"Epoch {epoch+1}/{epochs} Discriminator Train Loss: {np.mean(train_discriminator_losses)}, test loss: {test_discriminator_loss}")
-        
-        save_checkpoint(generator, discriminator, optimizer_G, optimizer_D, epoch, train_generator_losses, test_generator_losses, train_discriminator_losses, test_discriminator_losses, base_save_path, rank=rank)
-    
-    return np.array(train_generator_losses), np.array(test_generator_losses), np.array(train_discriminator_losses), np.array(test_discriminator_losses)
+            print(f"Epoch {epoch+1}/{epochs} Generator Train Loss: {np.mean(train_generator_losses)}")
+            print(f"Epoch {epoch+1}/{epochs} Generator Train BCE Loss: {np.mean(train_generator_bce_losses)}")
+            print(f"Epoch {epoch+1}/{epochs} Generator Train L1 Loss: {np.mean(train_generator_l1_losses)}")
+            print(f"Epoch {epoch+1}/{epochs} Discriminator Train Loss: {np.mean(train_discriminator_losses)}")
+            print(f"Epoch {epoch+1}/{epochs} Generator Test Loss: {test_generator_loss}")
+            print(f"Epoch {epoch+1}/{epochs} Generator Test BCE Loss: {test_generator_bce_loss}")
+            print(f"Epoch {epoch+1}/{epochs} Generator Test L1 Loss: {test_generator_l1_loss}")
+            print(f"Epoch {epoch+1}/{epochs} Discriminator Test Loss: {test_discriminator_loss}")
+
+        save_checkpoint(generator, discriminator, optimizer_G, optimizer_D, epoch, train_generator_losses, train_generator_bce_losses, train_generator_l1_losses,
+                        test_generator_losses, test_generator_bce_losses, test_generator_l1_losses, train_discriminator_losses, test_discriminator_losses, base_save_path, rank=rank)
+
+    return np.array(train_generator_losses), np.array(train_generator_bce_losses), np.array(train_generator_l1_losses), np.array(test_generator_losses), np.array(test_generator_bce_losses), np.array(test_generator_l1_losses), np.array(train_discriminator_losses), np.array(test_discriminator_losses)
+
 
 if __name__ == "__main__":
     rank = int(os.environ["RANK"])
@@ -329,10 +360,10 @@ if __name__ == "__main__":
     
     print(f"Rank {rank}: Creating data loaders...")
     #Subset the dataset for testing or debugging, if desired
-    max_train_samples = 80000
-    max_test_samples = 2000
-    train_dataset = Subset(train_dataset, range(max_train_samples))
-    test_dataset = Subset(test_dataset, range(max_test_samples))
+    # max_train_samples = 8000
+    # max_test_samples = 2000
+    # train_dataset = Subset(train_dataset, range(max_train_samples))
+    # test_dataset = Subset(test_dataset, range(max_test_samples))
     train_sampler = DistributedSampler(train_dataset)
     test_sampler = DistributedSampler(test_dataset)
     train_dataloader = DataLoader(train_dataset, batch_size=batch_size, sampler=train_sampler)

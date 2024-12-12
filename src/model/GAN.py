@@ -229,14 +229,14 @@ class Generator_Unet(nn.Module):
     def transp_conv_block(self,in_channels, out_channels, kernel_size, stride, padding,use_dropout=False):
         if use_dropout:
             block = nn.Sequential(
-                nn.ReLU(),
+                nn.ReLU(inplace=False),
                 nn.ConvTranspose2d(in_channels, out_channels, kernel_size=kernel_size, stride=stride, padding=padding, bias=False),
                 nn.BatchNorm2d(out_channels),
                 nn.Dropout(0.5),
             )
         else:
             block = nn.Sequential(
-                nn.ReLU(),
+                nn.ReLU(inplace=False),
                 nn.ConvTranspose2d(in_channels, out_channels, kernel_size=kernel_size, stride=stride, padding=padding, bias=False),
                 nn.BatchNorm2d(out_channels),
             )
@@ -245,6 +245,7 @@ class Generator_Unet(nn.Module):
     
     def forward(self, x):
         # Encoder with stored intermediate features
+        x = x.contiguous()
         x1 = self.conv_layer(x)
         x2 = self.conv_block1(x1)
         x3 = self.conv_block2(x2)
@@ -275,10 +276,10 @@ class Generator_Unet(nn.Module):
         output_image = torch.tanh(up8)
         return output_image
     
-    def generator_loss(self, fake_prediction, fake_ab, real_ab, lamb=100):
+    def generator_loss(self, fake_prediction, fake_ab, real_ab):
         generator_bce = self.loss(fake_prediction, torch.ones_like(fake_prediction))
         l1_loss = F.l1_loss(fake_ab, real_ab)
-        return generator_bce + lamb * l1_loss
+        return generator_bce, l1_loss
  
     
 
@@ -428,6 +429,8 @@ class Discriminator(nn.Module):
         self.loss = nn.BCELoss()
 
     def forward(self, gray_image,ab_image):
+        gray_image = gray_image.contiguous()
+        ab_image = ab_image.contiguous()
         x = torch.cat([gray_image, ab_image], dim=1)
         x = F.leaky_relu(self.conv1(x), 0.2, inplace=False)
         x = F.leaky_relu(self.conv2_bn(self.conv2(x)), 0.2, inplace=False)

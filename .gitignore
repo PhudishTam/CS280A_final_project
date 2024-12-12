@@ -5,3 +5,5 @@ sh_file/
 vae_results/
 model_saved/
 old_code/
+fake_images/
+real_images/
