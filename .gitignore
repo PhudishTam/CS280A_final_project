@@ -21,3 +21,4 @@ images/
 train_pre_train_new_loss.py
 test_*/
 train_*/
+real_images_test/
