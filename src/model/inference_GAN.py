@@ -1,14 +1,10 @@
 import sys
 sys.path.append("/accounts/grad/phudish_p/CS280A_final_project/src")
 from pre_process_data.dataset import Datasetcoloritzation
-#from model.GAN import Generator, Generator_Unet, Discriminator
-from model.GAN_text import Generator_Unet, Discriminator
+from GAN import Generator_Unet, Discriminator
 import torch
-from torch.utils.data import DataLoader, Subset
-from transformers import T5EncoderModel, T5Tokenizer
-import torchvision
+from torch.utils.data import DataLoader
 import numpy as np
-from skimage import color
 import cv2
 import os 
 import matplotlib.pyplot as plt
@@ -16,113 +12,116 @@ import matplotlib.pyplot as plt
 
 if __name__ == "__main__":
     print("Start loading the model")
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    # model = Generator().to(device)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu") 
+    generator = Generator_Unet(input_channel=1,out_channel=64,kernel_size=4,stride=2,padding=1,out_channel_decoder=512).to(device)
+    discriminator = Discriminator(input_channel=3,out_channel=64, kernel_size=4,stride=2,padding=1).to(device)
+    checkpoint_generator = torch.load('/accounts/grad/phudish_p/CS280A_final_project/model_saved/GAN_experiment_13_G_1.pt')
+    checkpoint_discriminator = torch.load('/accounts/grad/phudish_p/CS280A_final_project/model_saved/GAN_experiment_13_D_1.pt') 
     
-    model = Generator_Unet().to(device)
-    checkpoint = torch.load('/accounts/grad/phudish_p/CS280A_final_project/src/model/checkpoint_299_unet.pth')
-    # checkpoint = torch.load('/accounts/grad/phudish_p/CS280A_final_project/model_saved/GAN_experiment_4_G_2.pt')
-    # checkpoint_d = torch.load('/accounts/grad/phudish_p/CS280A_final_project/model_saved/GAN_experiment_4_D_2.pt')
-    print(checkpoint.keys())   
-    # print(checkpoint["epoch"])
-    # print(checkpoint["train_generator_losses"])
-    # print(checkpoint["train_generator_bce_losses"])
-    # print(checkpoint["train_generator_l1_losses"])
-    # print(checkpoint["test_generator_losses"])
-    # print(checkpoint["test_generator_bce_losses"])
-    # print(checkpoint["test_generator_l1_losses"])
-    
-    
-    # plt.plot(checkpoint["train_generator_losses"], label="train_generator_losses")
-    # plt.legend()
-    # plt.savefig("train_generator_losses.png")
-    # plt.close()
-    
-    # plt.plot(checkpoint["train_generator_bce_losses"], label="train_generator_bce_losses")
-    # plt.legend()
-    # plt.savefig("train_generator_bce_losses.png")
-    # plt.close()
-    
-    # plt.plot(checkpoint["train_generator_l1_losses"], label="train_generator_l1_losses")
-    # plt.legend()
-    # plt.savefig("train_generator_l1_losses.png")
-    # plt.close() 
-    
-    # plt.plot(checkpoint["test_generator_losses"], label="test_generator_losses")
-    # plt.legend()
-    # plt.savefig("test_generator_losses.png")
-    # plt.close()
-    
-    # plt.plot(checkpoint["test_generator_bce_losses"], label="test_generator_bce_losses")
-    # plt.legend()
-    # plt.savefig("test_generator_bce_losses.png")
-    # plt.close()
-
-    # plt.plot(checkpoint["test_generator_l1_losses"], label="test_generator_l1_losses")
-    # plt.legend()
-    # plt.savefig("test_generator_l1_losses.png")
-    # plt.close()
+    train_generator_losses_path = "train_generator_GAN_losses"
+    train_generator_bce_losses_path = "train_generator_GAN_losses"
+    train_generator_l1_losses_path = "train_generator_GAN_losses"
+    train_discriminator_losses_path = "train_discriminator_GAN_losses"
+    test_generator_losses_path = "test_generator_GAN_losses"
+    test_generator_bce_losses_path = "test_generator_GAN_losses"
+    test_generator_l1_losses_path = "test_generator_GAN_losses"
+    test_discriminator_losses_path = "test_discriminator_GAN_losses"
     
     
-    # plt.plot(checkpoint_d["test_discriminator_losses"], label="test_discriminator_losses")
-    # plt.legend()
-    # plt.savefig("test_discriminator_losses.png")
-    # plt.close()
+    os.makedirs(train_generator_losses_path, exist_ok=True)
+    os.makedirs(train_discriminator_losses_path, exist_ok=True)
+    os.makedirs(test_generator_losses_path, exist_ok=True)
+    os.makedirs(test_discriminator_losses_path, exist_ok=True)
     
-    # plt.plot(checkpoint_d["train_discriminator_losses"], label="train_discriminator_real_losses")
-    # plt.legend()
-    # plt.savefig("train_discriminator_real_losses.png")
-     
-    model.load_state_dict(checkpoint['generator_state_dict'])
-    model.eval()
+    # plot the train generator losses 
+    # print(len(checkpoint_generator['train_generator_losses']))
+    plt.plot(checkpoint_generator['train_generator_losses'])
+    plt.xlabel("Iteration")
+    plt.ylabel("Generator Loss")
+    plt.title("Train Generator Losses at every batch")
+    plt.savefig(f"{train_generator_losses_path}/train_generator_losses.png")
+    plt.close()
     
+    # plot the train generator bce losses
+    plt.plot(checkpoint_generator['train_generator_bce_losses'])
+    plt.xlabel("Iteration")
+    plt.ylabel("Generator BCE Loss")
+    plt.title("Train Generator BCE Losses at every batch")
+    plt.savefig(f"{train_generator_bce_losses_path}/train_generator_bce_losses.png")
+    plt.close()
+    
+    # plot the train generaotr l1 losses
+    plt.plot(checkpoint_generator['train_generator_l1_losses'])
+    plt.xlabel("Iteration")
+    plt.ylabel("Generator L1 Loss")
+    plt.title("Train Generator L1 Losses at every batch")
+    plt.savefig(f"{train_generator_l1_losses_path}/train_generator_l1_losses.png")
+    plt.close()
+    
+    # plot the train discriminator losses
+    plt.plot(checkpoint_discriminator['train_discriminator_losses'])
+    plt.xlabel("Iteration")
+    plt.ylabel("Discriminator Loss")
+    plt.title("Train Discriminator Losses at every batch")
+    plt.savefig(f"{train_discriminator_losses_path}/train_discriminator_losses.png")
+    plt.close()
+    
+    # plot the test generator losses
+    plt.plot(checkpoint_generator['test_generator_losses'])
+    plt.xlabel("Epoch")
+    plt.ylabel("Generator Loss")
+    plt.title("Test Generator Losses at every epoch")
+    plt.savefig("test_generator_GAN_losses/test_generator_losses.png")
+    plt.close()    
+    # plot the test generator bce losses
+    plt.plot(checkpoint_generator['test_generator_bce_losses'])
+    plt.xlabel("Epoch")
+    plt.ylabel("Generator BCE Loss")
+    plt.title("Test Generator BCE Losses at every epoch")
+    plt.savefig("test_generator_GAN_losses/test_generator_bce_losses.png")
+    plt.close()
+    
+    # plot the test generator l1 losses
+    plt.plot(checkpoint_generator['test_generator_l1_losses'])
+    plt.xlabel("Epoch")
+    plt.ylabel("Generator L1 Loss")
+    plt.title("Test Generator L1 Losses at every epoch")
+    plt.savefig("test_generator_GAN_losses/test_generator_l1_losses.png")
+    plt.close()
+    
+    # plot the test discriminator losses
+    plt.plot(checkpoint_discriminator['test_discriminator_losses'])
+    plt.xlabel("Epoch")
+    plt.ylabel("Discriminator Loss")
+    plt.title("Test Discriminator Losses at every epoch")
+    plt.savefig("test_discriminator_GAN_losses/test_discriminator_losses.png")
+    plt.close()
+    
+ 
+    generator.load_state_dict(checkpoint_generator['model_state_dict'])
+    generator.eval()    
     # Dataset setup
     validation_data_dir = "/accounts/grad/phudish_p/CS280A_final_project/initData/MS_COCO/val_set/val2017"
-    train_annotation_file1 = "/accounts/grad/phudish_p/CS280A_final_project/initData/MS_COCO/training_set/annotations/captions_val2017.json"
-    tokenizer = T5Tokenizer.from_pretrained("t5-small")
-    text_encoder = T5EncoderModel.from_pretrained("t5-small").to(device)
-    validation_dataset = Datasetcoloritzation(validation_data_dir, 
-                                            annotation_file1=train_annotation_file1,
-                                            device=device,
-                                            tokenizer=tokenizer,
-                                            training=False,
-                                            image_size=256)
+    validation_dataset = Datasetcoloritzation(validation_data_dir, device=device,training=False,image_size=256)
     
-    #validation_dataset = Subset(validation_dataset, range(16))
-    validation_dataloader = DataLoader(validation_dataset, batch_size=16, shuffle=True)
+    validation_dataloader = DataLoader(validation_dataset, batch_size=16, shuffle=False)
     image_generated = 0
     real_image_count = 0
-
-    # Create directories to save images
-    fake_image_dir = "fake_images"
-    real_image_dir = "real_images"
+   
+    fake_image_dir = "fake_images_test"
+    real_image_dir = "real_images_test"
     os.makedirs(fake_image_dir, exist_ok=True)
     os.makedirs(real_image_dir, exist_ok=True)
-
+ 
     with torch.no_grad():
         for batch in validation_dataloader:
-
             # Get L and ab channels
             L = batch['l_channels'].to(device).permute(0, 3, 1, 2).contiguous()
             ab = batch['ab_channels'].to(device).permute(0, 3, 1, 2).contiguous()
-            tokenized_caption = {key: value.to(device) for key, value in batch['caption'].items()}
-            with torch.no_grad():
-                text_output = text_encoder(**tokenized_caption)
-                text_hidden_state = text_output.last_hidden_state
-                attention_mask = tokenized_caption["attention_mask"]
-                seq_length = attention_mask.sum(dim=1)
-                last_token_position = seq_length - 1
-                batch_indices = torch.arange(text_hidden_state.shape[0]).to(device)
-                text_embedding = text_hidden_state[batch_indices, last_token_position, :]
-                text_embedding.to(device)
-
-            fake_ab = model(L)
-            
+            fake_ab = generator(L)            
             L = (L + 1) * 50 
             ab = ab * 150
             fake_ab = fake_ab * 150
-            
-            # Concatenate L and ab channels
             fake_image = torch.cat((L, fake_ab), dim=1).detach().cpu().numpy()
             real_image = torch.cat((L, ab), dim=1).detach().cpu().numpy()
 

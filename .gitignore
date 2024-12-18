@@ -7,3 +7,17 @@ model_saved/
 old_code/
 fake_images/
 real_images/
+old_code_not_work/
+a_channel/
+b_channel/
+l_channel/
+fake_images_vqgan/
+fake_images_pretrain_GAN_old_loss/
+*.pt
+*.json
+papers/
+dataset/
+images/
+train_pre_train_new_loss.py
+test_*/
+train_*/
